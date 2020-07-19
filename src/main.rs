@@ -7,24 +7,25 @@ extern crate clap;
 extern crate env_logger;
 extern crate time;
 extern crate uuid;
+extern crate threadpool;
 
-use data_management::data_management::{data_base, device};
+//use data_management::data_management::{data_base, device};
+use data_management::data_management::data_base;
 use std::env;
 use std::io::Write;
 use std::net::TcpStream;
 use std::str;
-
 use clap::{App, Arg};
-
 use uuid::Uuid;
 
 use mqtt::control::variable_header::ConnectReturnCode;
 use mqtt::packet::*;
 use mqtt::{TopicFilter, TopicName};
 use mqtt::{Decodable, Encodable, QualityOfService};
-
 use std::thread;
 use std::time::Duration;
+
+use threadpool::ThreadPool;
 
 fn generate_client_id() -> String {
     format!("/MQTT/rust/{}", Uuid::new_v4())
@@ -88,12 +89,13 @@ fn main() {
     env::set_var("RUST_LOG", env::var_os("RUST_LOG").unwrap_or_else(|| "info".into()));
     env_logger::init();
 
-    let db = match init_data_base("./", "test.db") {
+    let _db = match init_data_base("./", "test.db") {
         Ok(database) => database,
         Err(err) => {
             panic!("Problem opening the database: {:?}", err)
         },
     };
+    let thread_pool = ThreadPool::new(8);
 
     let matches = App::new("sub-client")
         .author("Y. T. Chung <zonyitoo@gmail.com>")
@@ -233,31 +235,28 @@ fn main() {
             }
             VariablePacket::PublishPacket(ref publ) => {
                 let msg = match str::from_utf8(&publ.payload_ref()[..]) {
-                    Ok(msg) => {
-                        let mut sn_topic = Vec::with_capacity(4);
-                        let v: Vec<&str> = publ.topic_name().split('/').collect();
-                        // 不足 4 的时候应该会有问题
-                        for i in 0..4 {
-                            sn_topic.push(v[i]);
-                        }
-                        if sn_topic[0] == "client" {
-                            let client_id = sn_topic[1];
-                            let topic = sn_topic[3];
-                            let mut sn_stream = stream.try_clone().unwrap();
-                            let r = sn_msg_handle(client_id, &topic, &msg, "127.0.0.1:1884");
-                            match r {
-                                Ok(_ok) => info!("handle sn msg successfully"),
-                                Err(err) => info!("handle sn msg failed: {:#?}", err),
-                            };
-                        }
-                        msg
-                    },
+                    Ok(msg) => msg,
                     Err(err) => {
                         error!("Failed to decode publish message {:?}", err);
                         continue;
                     }
                 };
                 info!("PUBLISH ({}): {}", publ.topic_name(), msg);
+                let mut sn_topic = Vec::with_capacity(4);
+                let topic_name = String::from(&publ.topic_name()[..]);
+                let v: Vec<&str> = topic_name.split('/').collect();
+                // 不足 4 的时候应该会有问题
+                for i in 0..4 {
+                    sn_topic.push(String::from(v[i]));
+                }
+                if sn_topic[0] == "client" {
+                    //let client_id = &sn_topic[1];
+                    //let topic = &sn_topic[3];
+                    let sn_msg = String::from(msg);
+                    thread_pool.execute(move || {
+                        sn_msg_handle(&sn_topic[1], &sn_topic[3], &sn_msg, "127.0.0.1:1884");
+                    });
+                }
             }
             _ => {}
         }
