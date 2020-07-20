@@ -48,40 +48,77 @@ fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
     Ok(db)
 }
 
-fn sn_msg_handle(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), ()>
+enum SnMsgHandleError{
+    SnMsgConnError,
+    SnMsgConnAckError,
+    SnMsgPubError,
+    SnMsgDisconnError,
+    SnMsgPacketError,
+    SnMsgTopicNameError,
+}
+
+fn sn_msg_handle(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMsgHandleError>
 {
     // 连接服务器
     info!("Connecting to {:?} ... ", server);
-    let mut stream = TcpStream::connect(server).unwrap();
+    let mut stream = match TcpStream::connect(server){
+        Ok(stream) => stream,
+        Err(_err) => return Err(SnMsgHandleError::SnMsgConnError),
+    };
     info!("Connected!");
 
     info!("Client identifier {:?}", sn);
     let mut conn = ConnectPacket::new("MQTT", sn);
     conn.set_clean_session(true);
     let mut buf = Vec::new();
-    conn.encode(&mut buf).unwrap();
-    stream.write_all(&buf[..]).unwrap();
+    match conn.encode(&mut buf) {
+        Ok(_) => {},
+        Err(_err) => return Err(SnMsgHandleError::SnMsgPacketError),
+    };
+    match stream.write_all(&buf[..]) {
+        Ok(_) => {},
+        Err(_err) => return Err(SnMsgHandleError::SnMsgConnError),
+    };
 
-    let connack = ConnackPacket::decode(&mut stream).unwrap();
+    let connack = match ConnackPacket::decode(&mut stream) {
+        Ok(connack) => connack,
+        Err(_) => return Err(SnMsgHandleError::SnMsgPacketError),
+    };
     trace!("CONNACK {:?}", connack);
 
     if connack.connect_return_code() != ConnectReturnCode::ConnectionAccepted {
-        panic!(
+        info!(
             "Failed to connect to server, return code {:?}",
             connack.connect_return_code()
         );
+        return Err(SnMsgHandleError::SnMsgConnAckError);
     }
     // 发布消息
-    let topic_name = TopicName::new(topic).unwrap();
+    let topic_name = match TopicName::new(topic) {
+        Ok(topic_name) => topic_name,
+        Err(_)  => return Err(SnMsgHandleError::SnMsgTopicNameError),
+    };
     let publish_packet = PublishPacket::new(topic_name, QoSWithPacketIdentifier::Level0, msg.clone());
     let mut buf = Vec::new();
-    publish_packet.encode(&mut buf).unwrap();
-    stream.write_all(&buf[..]).unwrap();
+    match publish_packet.encode(&mut buf) {
+        Ok(_) => {},
+        Err(_) => return Err(SnMsgHandleError::SnMsgPacketError),
+    };
+    match stream.write_all(&buf[..]) {
+        Ok(_) => {},
+        Err(_err) => return Err(SnMsgHandleError::SnMsgPubError),
+    };
     // 断开连接
     let disconn_pakdet = DisconnectPacket::new();
     let mut buf = Vec::new();
-    disconn_pakdet.encode(&mut buf).unwrap();
-    stream.write_all(&buf[..]).unwrap();
+    match disconn_pakdet.encode(&mut buf) {
+        Ok(_) => {},
+        Err(_err) => return Err(SnMsgHandleError::SnMsgPacketError),
+    };
+    match stream.write_all(&buf[..]) {
+        Ok(_) => {},
+        Err(_err) => return Err(SnMsgHandleError::SnMsgDisconnError),
+    };
     Ok(())
 }
 
@@ -254,7 +291,12 @@ fn main() {
                     //let topic = &sn_topic[3];
                     let sn_msg = String::from(msg);
                     thread_pool.execute(move || {
-                        sn_msg_handle(&sn_topic[1], &sn_topic[3], &sn_msg, "127.0.0.1:1884");
+                        let r = sn_msg_handle(&sn_topic[1], &sn_topic[3],
+                                    &sn_msg, "127.0.0.1:1884");
+                        match r {
+                            Ok(_) => info!("handle sn msg successfully"),
+                            Err(_) => error!("handle sn({}) msg failed", &sn_topic[1]),
+                        };
                     });
                 }
             }
