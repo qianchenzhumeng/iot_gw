@@ -1,6 +1,7 @@
 pub mod data_management{
+    #[derive(Debug)]
     pub struct DeviceData {
-        pub device_serial_number: usize,
+        pub device_serial_number: u32,
         pub timestamp_msec: u64,
         pub time_string: String,
         pub temperature: f32,
@@ -11,7 +12,7 @@ pub mod data_management{
     }
 
     pub struct DeviceError {
-        pub device_serial_number: usize,
+        pub device_serial_number: u32,
         pub timestamp_msec: u64,
         pub time_string: String,
         pub error_code: i32,
@@ -26,25 +27,57 @@ pub mod data_management{
             }
         }
 
-        pub fn create_device_table(db: &rusqlite::Connection) -> Result<usize, ()> {
+        pub fn create_device_table(db: &rusqlite::Connection) -> Result<(), ()> {
             let r = db.execute(
-                        "CREATE TABLE DEVICE(
+                    "CREATE TABLE DEVICE(
                         ID INTEGER PRIMARY KEY,
                         SN INTEGER,
                         TYPE CHAR(10),
                         TIME_MS INTEGER,
                         TIME_STR CHAR(10)
-                        )",
-                        rusqlite::params![],
+                    )",
+                    rusqlite::params![],
                 );
             match r {
-                Ok(changed) => Ok(changed),
+                Ok(_ok) => Ok(()),
                 Err(_err) => Err(()),
             }
         }
 
-        pub fn create_device_data_table(){}
-        pub fn create_device_error_table(){}
+        pub fn create_device_data_table(db: &rusqlite::Connection) -> Result<(), ()> {
+            let r = db.execute(
+                    "CREATE TABLE DEVICE_DATA(
+                        ID INTEGER PRIMARY KEY,
+                        DEVICE_ID INTEGER,
+                        TIMESTAMP INTEGER,
+                        TIMESTRING CHAR(20),
+                        TEMPERATURE REAL,
+                        HUMIDITY REAL,
+                        VOLTAGE REAL
+                    )",
+                    rusqlite::params![],
+            );
+            match r {
+                Ok(_ok) => Ok(()),
+                Err(_err) => Err(()),
+            }
+        }
+        pub fn create_device_error_table(db: &rusqlite::Connection) -> Result<(), ()> {
+            let r = db.execute(
+                    "CREATE TABLE DEVICE_ERROR(
+                        ID INTEGER PRIMARY KEY,
+                        DEVICE_ID INTEGER,
+                        TIMESTAMP INTEGER,
+                        TIMESTRING CHAR(20),
+                        ERROR_CODE INTEGER
+                    )",
+                    rusqlite::params![],
+                );
+            match r {
+                Ok(_ok) => Ok(()),
+                Err(_err) => Err(()),
+            }
+        }
     }
 
     pub mod device{
@@ -82,7 +115,7 @@ pub mod data_management{
     }
 
     impl DeviceData {
-        pub fn new(device_serial_number: usize, timestamp_msec: u64, time_string: &str, temperature: f32, humidity: f32,
+        pub fn new(device_serial_number: u32, timestamp_msec: u64, time_string: &str, temperature: f32, humidity: f32,
                     voltage: f32, rssi: u32, error_code: i32) -> DeviceData {
                         DeviceData {
                             device_serial_number: device_serial_number,
@@ -98,7 +131,7 @@ pub mod data_management{
     }
 
     impl DeviceError {
-        pub fn new(device_serial_number: usize, timestamp_msec: u64, time_string: &str, error_code: i32) -> DeviceError {
+        pub fn new(device_serial_number: u32, timestamp_msec: u64, time_string: &str, error_code: i32) -> DeviceError {
             DeviceError {
                 device_serial_number: device_serial_number,
                 timestamp_msec: timestamp_msec,

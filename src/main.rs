@@ -1,31 +1,32 @@
 extern crate data_management;
-extern crate rusqlite;
 extern crate mqtt;
-#[macro_use]
-extern crate log;
 extern crate clap;
-extern crate env_logger;
 extern crate time;
 extern crate uuid;
 extern crate threadpool;
+extern crate json;
+#[macro_use]
+extern crate log;
+extern crate env_logger;
+extern crate rusqlite;
+extern crate chrono;
 
-//use data_management::data_management::{data_base, device};
-use data_management::data_management::data_base;
+use std::time::{SystemTime, UNIX_EPOCH};
+use data_management::data_management::{data_base, DeviceData};
 use std::env;
 use std::io::Write;
 use std::net::TcpStream;
 use std::str;
 use clap::{App, Arg};
 use uuid::Uuid;
-
 use mqtt::control::variable_header::ConnectReturnCode;
 use mqtt::packet::*;
 use mqtt::{TopicFilter, TopicName};
 use mqtt::{Decodable, Encodable, QualityOfService};
 use std::thread;
 use std::time::Duration;
-
 use threadpool::ThreadPool;
+use chrono::prelude::*;
 
 fn generate_client_id() -> String {
     format!("/MQTT/rust/{}", Uuid::new_v4())
@@ -42,13 +43,25 @@ fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
     };
 
     match data_base::create_device_table(&db) {
-        Ok(changed) => println!("{} rows were changed", changed),
+        Ok(_ok) => println!("create DEVICE table successfully"),
         Err(err) => println!("create DEVICE table failed: {:?}", err),
     }
+
+    match data_base::create_device_data_table(&db) {
+        Ok(_ok) => println!("create DEVICE_DATA table successfully"),
+        Err(err) => println!("create DEVICE_DATA table failed: {:?}", err),
+    }
+
+    match data_base::create_device_error_table(&db) {
+        Ok(_ok) => println!("create DEVICE_ERROR table successfully"),
+        Err(err) => println!("create DEVICE_ERROR table failed: {:?}", err),
+    }
+
     Ok(db)
 }
 
 enum SnMsgHandleError{
+    SnMsgParseError,
     SnMsgConnError,
     SnMsgConnAckError,
     SnMsgPubError,
@@ -57,7 +70,7 @@ enum SnMsgHandleError{
     SnMsgTopicNameError,
 }
 
-fn sn_msg_handle(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMsgHandleError>
+fn sn_msg_pub(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMsgHandleError>
 {
     // 连接服务器
     info!("Connecting to {:?} ... ", server);
@@ -119,6 +132,59 @@ fn sn_msg_handle(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), S
         Ok(_) => {},
         Err(_err) => return Err(SnMsgHandleError::SnMsgDisconnError),
     };
+    Ok(())
+}
+
+fn sn_msg_handle(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMsgHandleError>
+{
+    let parsed = match json::parse(&msg) {
+        Ok(parsed) => parsed,
+        Err(_err) => {
+            error!("bad JSON string from sn {}: {}", sn, &msg);
+            return Err(SnMsgHandleError::SnMsgParseError);
+        },
+    };
+    if let Err(_) = sn_msg_pub(&sn, &topic,&msg, server) {
+        error!("publish sn {} msg failed: {}", &sn, &msg);
+        let n = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(n) => n,
+            Err(_) => Duration::from_secs(0),
+        };
+        let timestamp_msec = n.as_millis() as u64;
+        let time_string = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let id = match parsed["id"].as_u32() {
+            Some(id) => id,
+            None => 0,
+        };
+        let temperature = match parsed["temperature"].as_f32() {
+            Some(t) => t,
+            None => 0.0,
+        };
+        let humidity = match parsed["humidity"].as_f32() {
+            Some(h) => h,
+            None => 0.0,
+        };
+        let voltage = match parsed["voltage"].as_f32() {
+            Some(v) => v,
+            None => 0.0,
+        };
+        let status = match parsed["status"].as_i32() {
+            Some(s) => s,
+            None => 1,
+        };
+        let data = DeviceData{
+            device_serial_number: id,
+            timestamp_msec: timestamp_msec,
+            time_string: time_string,
+            temperature: temperature,
+            humidity: humidity,
+            voltage: voltage,
+            rssi: 0,
+            error_code: status,
+        };
+        //info!("{:#?}", data);
+        return Err(SnMsgHandleError::SnMsgPubError);
+    }
     Ok(())
 }
 
