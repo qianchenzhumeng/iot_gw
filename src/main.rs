@@ -27,13 +27,14 @@ use std::thread;
 use std::time::Duration;
 use threadpool::ThreadPool;
 use chrono::prelude::*;
+use std::sync::{Arc, Mutex};
 
 fn generate_client_id() -> String {
     format!("/MQTT/rust/{}", Uuid::new_v4())
 }
 
-fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
-    let db = data_base::init_data_base(path, name);
+fn init_data_base(path: &str, name: &str) -> Result<Arc<Mutex<rusqlite::Connection>>, ()> {
+    let db = data_base::open_data_base(path, name);
 
     let db = match db {
         Ok(database) => database,
@@ -43,18 +44,18 @@ fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
     };
 
     match data_base::create_device_table(&db) {
-        Ok(_ok) => println!("create DEVICE table successfully"),
-        Err(err) => println!("create DEVICE table failed: {:?}", err),
+        Ok(_ok) => info!("create DEVICE table successfully"),
+        Err(err) => error!("create DEVICE table failed: {:?}", err),
     }
 
     match data_base::create_device_data_table(&db) {
-        Ok(_ok) => println!("create DEVICE_DATA table successfully"),
-        Err(err) => println!("create DEVICE_DATA table failed: {:?}", err),
+        Ok(_ok) => info!("create DEVICE_DATA table successfully"),
+        Err(err) => error!("create DEVICE_DATA table failed: {:?}", err),
     }
 
     match data_base::create_device_error_table(&db) {
-        Ok(_ok) => println!("create DEVICE_ERROR table successfully"),
-        Err(err) => println!("create DEVICE_ERROR table failed: {:?}", err),
+        Ok(_ok) => info!("create DEVICE_ERROR table successfully"),
+        Err(err) => error!("create DEVICE_ERROR table failed: {:?}", err),
     }
 
     Ok(db)
@@ -68,6 +69,7 @@ enum SnMsgHandleError{
     SnMsgDisconnError,
     SnMsgPacketError,
     SnMsgTopicNameError,
+    SnMsgBuffDataError,
 }
 
 fn sn_msg_pub(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMsgHandleError>
@@ -182,7 +184,29 @@ fn sn_msg_handle(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), S
             rssi: 0,
             error_code: status,
         };
-        //info!("{:#?}", data);
+        let db = match data_base::open_data_base("./", "test.db") {
+            Ok(db) => db,
+            Err(err) => {
+                error!("open database  failed: {:?}", err);
+                return Err(SnMsgHandleError::SnMsgBuffDataError);
+            },
+        };
+        match data_base::insert_data_to_device_data_table(&db, &data) {
+            Ok(_ok) => {
+                info!("buffed data successfully");
+                return Ok(());
+            },
+            Err(err) => {
+                error!("buffed data  failed: {:?}", err);
+                return Err(SnMsgHandleError::SnMsgBuffDataError);
+            },
+        }
+        //match data_base::close_data_base(&db) {
+        //    Ok(_ok) => Ok(_ok) => info!("buffed data successfully"),
+        //    Err(err) => {
+        //        error!("Problem closing the database: {:?}", err)
+        //    },
+        //info!("data: {:#?}", data);
         return Err(SnMsgHandleError::SnMsgPubError);
     }
     Ok(())
@@ -192,7 +216,7 @@ fn main() {
     env::set_var("RUST_LOG", env::var_os("RUST_LOG").unwrap_or_else(|| "info".into()));
     env_logger::init();
 
-    let _db = match init_data_base("./", "test.db") {
+    match init_data_base("./", "test.db") {
         Ok(database) => database,
         Err(err) => {
             panic!("Problem opening the database: {:?}", err)
@@ -369,25 +393,4 @@ fn main() {
             _ => {}
         }
     }
-    /*
-    let dev = device::Device {
-        device_serial_number: 0,
-        device_type: "I".to_string(),
-        timestamp_msec: 0,
-        time_string: "0000".to_string(),
-    };
-
-    match device::create_device(&db, &dev) {
-        Ok(created) => println!("{} device were created", created),
-        //Err(err) => println!("create device {:#?} failed: {:?}", dev, err),
-        Err(_err) => {},
-    };
-    
-    let _db = match db.close() {
-        Ok(database) => database,
-        Err(err) => {
-            panic!("Problem closing the database: {:?}", err)
-        },
-    };
-    */
 }
