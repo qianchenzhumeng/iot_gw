@@ -27,7 +27,7 @@ use std::thread;
 use std::time::Duration;
 use threadpool::ThreadPool;
 use chrono::prelude::*;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 fn generate_client_id() -> String {
     format!("/MQTT/rust/{}", Uuid::new_v4())
@@ -207,9 +207,65 @@ fn sn_msg_handle(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), S
         //        error!("Problem closing the database: {:?}", err)
         //    },
         //info!("data: {:#?}", data);
-        return Err(SnMsgHandleError::SnMsgPubError);
     }
     Ok(())
+}
+
+fn connect_to_server(server: &str, client_id: &str, channel_filters: &Vec<(TopicFilter, QualityOfService)>) -> Result<TcpStream, ()> {
+    let keep_alive = 10;
+
+    let mut stream = match TcpStream::connect(server) {
+        Ok(stream) => stream,
+        Err(_err) => return Err(()),
+    };
+    info!("Connected!");
+
+    info!("Client identifier {:?}", client_id);
+    let mut conn = ConnectPacket::new("MQTT", client_id);
+    conn.set_clean_session(true);
+    conn.set_keep_alive(keep_alive);
+    let mut buf = Vec::new();
+    conn.encode(&mut buf).unwrap();
+    stream.write_all(&buf[..]).unwrap();
+
+    let connack = ConnackPacket::decode(&mut stream).unwrap();
+    trace!("CONNACK {:?}", connack);
+
+    if connack.connect_return_code() != ConnectReturnCode::ConnectionAccepted {
+        //panic!(
+        //    "Failed to connect to server, return code {:?}",
+        //    connack.connect_return_code()
+        //);
+        return Err(());
+    }
+
+    // const CHANNEL_FILTER: &'static str = "typing-speed-test.aoeu.eu";
+    info!("Applying channel filters {:?} ...", channel_filters);
+    let sub = SubscribePacket::new(10, channel_filters.to_vec());
+    let mut buf = Vec::new();
+    sub.encode(&mut buf).unwrap();
+    stream.write_all(&buf[..]).unwrap();
+
+    loop {
+        let packet = match VariablePacket::decode(&mut stream) {
+            Ok(pk) => pk,
+            Err(err) => {
+                error!("Error in receiving packet {:?}", err);
+                continue;
+            }
+        };
+        trace!("PACKET {:?}", packet);
+
+        if let VariablePacket::SubackPacket(ref ack) = packet {
+            if ack.packet_identifier() != 10 {
+                panic!("SUBACK packet identifier not match");
+            }
+
+            info!("Subscribed!");
+            break;
+        }
+    }
+    Ok(stream)
 }
 
 fn main() {
@@ -223,7 +279,7 @@ fn main() {
         },
     };
     let thread_pool = ThreadPool::new(8);
-
+    
     let matches = App::new("sub-client")
         .author("Y. T. Chung <zonyitoo@gmail.com>")
         .arg(
@@ -271,126 +327,98 @@ fn main() {
         .unwrap()
         .map(|c| (TopicFilter::new(c.to_string()).unwrap(), QualityOfService::Level0))
         .collect();
-
-    let keep_alive = 60;
-
-    info!("Connecting to {:?} ... ", server_addr);
-    let mut stream = TcpStream::connect(server_addr).unwrap();
-    info!("Connected!");
-
-    info!("Client identifier {:?}", client_id);
-    let mut conn = ConnectPacket::new("MQTT", client_id);
-    conn.set_clean_session(true);
-    conn.set_keep_alive(keep_alive);
-    let mut buf = Vec::new();
-    conn.encode(&mut buf).unwrap();
-    stream.write_all(&buf[..]).unwrap();
-
-    let connack = ConnackPacket::decode(&mut stream).unwrap();
-    trace!("CONNACK {:?}", connack);
-
-    if connack.connect_return_code() != ConnectReturnCode::ConnectionAccepted {
-        panic!(
-            "Failed to connect to server, return code {:?}",
-            connack.connect_return_code()
-        );
-    }
-
-    // const CHANNEL_FILTER: &'static str = "typing-speed-test.aoeu.eu";
-    info!("Applying channel filters {:?} ...", channel_filters);
-    let sub = SubscribePacket::new(10, channel_filters);
-    let mut buf = Vec::new();
-    sub.encode(&mut buf).unwrap();
-    stream.write_all(&buf[..]).unwrap();
-
+    let mut try_to_connect = true;
     loop {
-        let packet = match VariablePacket::decode(&mut stream) {
-            Ok(pk) => pk,
-            Err(err) => {
-                error!("Error in receiving packet {:?}", err);
+        if try_to_connect {
+            info!("Connecting to {:?} ... ", server_addr);
+            try_to_connect = false;
+        }
+        let mut stream = match connect_to_server(&server_addr, &client_id, &channel_filters) {
+            Ok(stream) => stream,
+            Err(_err) => {
+                thread::sleep(Duration::new(10, 0));
                 continue;
-            }
+            },
         };
-        trace!("PACKET {:?}", packet);
 
-        if let VariablePacket::SubackPacket(ref ack) = packet {
-            if ack.packet_identifier() != 10 {
-                panic!("SUBACK packet identifier not match");
-            }
-
-            info!("Subscribed!");
-            break;
-        }
-    }
-
-    let mut stream_clone = stream.try_clone().unwrap();
-    thread::spawn(move || {
-        let mut last_ping_time = 0;
-        let mut next_ping_time = last_ping_time + (keep_alive as f32 * 0.9) as i64;
-        loop {
-            let current_timestamp = time::get_time().sec;
-            if keep_alive > 0 && current_timestamp >= next_ping_time {
-                info!("Sending PINGREQ to broker");
-
-                let pingreq_packet = PingreqPacket::new();
-
-                let mut buf = Vec::new();
-                pingreq_packet.encode(&mut buf).unwrap();
-                stream_clone.write_all(&buf[..]).unwrap();
-
-                last_ping_time = current_timestamp;
-                next_ping_time = last_ping_time + (keep_alive as f32 * 0.9) as i64;
-                thread::sleep(Duration::new((keep_alive / 2) as u64, 0));
-            }
-        }
-    });
-
-    loop {
-        let packet = match VariablePacket::decode(&mut stream) {
-            Ok(pk) => pk,
-            Err(err) => {
-                //error!("Error in receiving packet {}", err);
-                //continue;
-                panic!("Error in receiving packet {}", err);
-            }
-        };
-        trace!("PACKET {:?}", packet);
-
-        match packet {
-            VariablePacket::PingrespPacket(..) => {
-                info!("Receiving PINGRESP from broker ..");
-            }
-            VariablePacket::PublishPacket(ref publ) => {
-                let msg = match str::from_utf8(&publ.payload_ref()[..]) {
-                    Ok(msg) => msg,
-                    Err(err) => {
-                        error!("Failed to decode publish message {:?}", err);
-                        continue;
-                    }
+        let (main_thread_tx, ping_thread_rx) = mpsc::channel();
+        let mut stream_clone = stream.try_clone().unwrap();
+        let ping_thread = thread::spawn(move || {
+            let keep_alive = 5;
+            let mut last_ping_time = 0;
+            let mut next_ping_time = last_ping_time + (keep_alive as f32 * 0.9) as i64;
+            loop {
+                match ping_thread_rx.try_recv() {
+                    Ok(_ok) => break,
+                    Err(_err) => {},
                 };
-                info!("PUBLISH ({}): {}", publ.topic_name(), msg);
-                let mut sn_topic = Vec::with_capacity(4);
-                let topic_name = String::from(&publ.topic_name()[..]);
-                let v: Vec<&str> = topic_name.split('/').collect();
-                // 不足 4 的时候应该会有问题
-                for i in 0..4 {
-                    sn_topic.push(String::from(v[i]));
-                }
-                if sn_topic[0] == "client" {
-                    //let client_id = &sn_topic[1];
-                    //let topic = &sn_topic[3];
-                    let sn_msg = String::from(msg);
-                    thread_pool.execute(move || {
-                        let r = sn_msg_handle(&sn_topic[1], &sn_topic[3],
-                                    &sn_msg, "127.0.0.1:1884");
-                        match r {
-                            Ok(_) => info!("handle sn msg successfully"),
-                            Err(_) => error!("handle sn({}) msg failed", &sn_topic[1]),
-                        };
-                    });
+                let current_timestamp = time::get_time().sec;
+                if keep_alive > 0 && current_timestamp >= next_ping_time {
+                    //info!("Sending PINGREQ to broker");
+
+                    let pingreq_packet = PingreqPacket::new();
+
+                    let mut buf = Vec::new();
+                    pingreq_packet.encode(&mut buf).unwrap();
+                    stream_clone.write_all(&buf[..]).unwrap();
+
+                    last_ping_time = current_timestamp;
+                    next_ping_time = last_ping_time + (keep_alive as f32 * 0.9) as i64;
+                    thread::sleep(Duration::new((keep_alive / 2) as u64, 0));
                 }
             }
-            _ => {}
+        });
+
+        loop {
+            let packet = match VariablePacket::decode(&mut stream) {
+                Ok(pk) => pk,
+                Err(err) => {
+                    //error!("Error in receiving packet {}", err);
+                    main_thread_tx.send("quit");
+                    ping_thread.join();
+                    break;
+                }
+            };
+            trace!("PACKET {:?}", packet);
+
+            match packet {
+                VariablePacket::PingrespPacket(..) => {
+                    //info!("Receiving PINGRESP from broker ..");
+                }
+                VariablePacket::PublishPacket(ref publ) => {
+                    let msg = match str::from_utf8(&publ.payload_ref()[..]) {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            error!("Failed to decode publish message {:?}", err);
+                            continue;
+                        }
+                    };
+                    info!("PUBLISH ({}): {}", publ.topic_name(), msg);
+                    let mut sn_topic = Vec::with_capacity(4);
+                    let topic_name = String::from(&publ.topic_name()[..]);
+                    let v: Vec<&str> = topic_name.split('/').collect();
+                    // 不足 4 的时候应该会有问题
+                    for i in 0..4 {
+                        sn_topic.push(String::from(v[i]));
+                    }
+                    if sn_topic[0] == "client" {
+                        //let client_id = &sn_topic[1];
+                        //let topic = &sn_topic[3];
+                        let sn_msg = String::from(msg);
+                        thread_pool.execute(move || {
+                            let r = sn_msg_handle(&sn_topic[1], &sn_topic[3],
+                                        &sn_msg, "127.0.0.1:1884");
+                            match r {
+                                Ok(_) => info!("handle sn msg successfully"),
+                                Err(_) => error!("handle sn({}) msg failed", &sn_topic[1]),
+                            };
+                        });
+                    }
+                }
+                _ => {}
+            }
         }
+        error!("lose connection to {}", &server_addr);
+        try_to_connect = true;
     }
 }
