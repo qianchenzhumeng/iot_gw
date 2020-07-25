@@ -1,4 +1,5 @@
 extern crate data_management;
+extern crate sensor_interface;
 extern crate mqtt;
 extern crate clap;
 extern crate time;
@@ -13,6 +14,7 @@ extern crate chrono;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use data_management::data_management::{data_base, DeviceData};
+use sensor_interface::file_if;
 use std::env;
 use std::io::Write;
 use std::net::TcpStream;
@@ -278,7 +280,6 @@ fn main() {
             panic!("Problem opening the database: {:?}", err)
         },
     };
-    let thread_pool = ThreadPool::new(8);
     
     let matches = App::new("sub-client")
         .author("Y. T. Chung <zonyitoo@gmail.com>")
@@ -328,6 +329,31 @@ fn main() {
         .map(|c| (TopicFilter::new(c.to_string()).unwrap(), QualityOfService::Level0))
         .collect();
     let mut try_to_connect = true;
+    let thread_pool = ThreadPool::new(8);
+
+    // 从文件中获取传感器数据，如果和上次的不相同则处理
+    thread::spawn(|| {
+        let id = String::from("pepper_gw");
+        let topic = String::from("sn_data");
+        let mut last_msg = String::from("");
+        loop {
+            match file_if::read_msg("./msg_data.txt") {
+                Ok(sn_msg) => {
+                    if last_msg.ne(&sn_msg) && !sn_msg.is_empty() {
+                        let r = sn_msg_handle(&id, &topic, &sn_msg, "127.0.0.1:1884");
+                        match r {
+                            Ok(_) => info!("handle sn msg successfully"),
+                            Err(_) => error!("handle msg failed: {}", sn_msg),
+                        };
+                        last_msg = sn_msg.clone();
+                    }
+                },
+                Err(_err) => {},
+            };
+            thread::sleep(Duration::new(1, 0));
+        }
+    });
+
     loop {
         if try_to_connect {
             info!("Connecting to {:?} ... ", server_addr);
@@ -350,7 +376,7 @@ fn main() {
             loop {
                 match ping_thread_rx.try_recv() {
                     Ok(_ok) => break,
-                    Err(_err) => {},
+                    _ => {},
                 };
                 let current_timestamp = time::get_time().sec;
                 if keep_alive > 0 && current_timestamp >= next_ping_time {
@@ -372,14 +398,20 @@ fn main() {
         loop {
             let packet = match VariablePacket::decode(&mut stream) {
                 Ok(pk) => pk,
-                Err(err) => {
+                Err(_err) => {
                     //error!("Error in receiving packet {}", err);
-                    main_thread_tx.send("quit");
-                    ping_thread.join();
+                    match main_thread_tx.send("quit") {
+                        Ok(_ok) => {},
+                        Err(_err) => {},
+                    }
+                    match ping_thread.join() {
+                        Ok(_ok) => {},
+                        Err(_err) => {},
+                    }
                     break;
                 }
             };
-            trace!("PACKET {:?}", packet);
+            //trace!("PACKET {:?}", packet);
 
             match packet {
                 VariablePacket::PingrespPacket(..) => {
@@ -412,7 +444,7 @@ fn main() {
                                 Ok(_) => info!("handle sn msg successfully"),
                                 Err(_) => error!("handle sn({}) msg failed", &sn_topic[1]),
                             };
-                        });
+                        })
                     }
                 }
                 _ => {}

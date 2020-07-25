@@ -7,7 +7,8 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-data_management = { path = "./data_management"}
+data_management = { path = "./data_management" }
+sensor_interface = { path = "./sensor_interface" }
 mqtt-protocol = "0.8.1"
 rusqlite = "0.23.1"
 log = "0.4"
