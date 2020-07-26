@@ -3,11 +3,11 @@ pub mod data_management{
     #[derive(Debug)]
     pub struct DeviceData {
         pub device_serial_number: u32,
-        pub timestamp_msec: u64,
+        pub timestamp_msec: i64,
         pub time_string: String,
-        pub temperature: f32,
-        pub humidity: f32,
-        pub voltage: f32,
+        pub temperature: f64,
+        pub humidity: f64,
+        pub voltage: f64,
         pub rssi: u32,
         pub error_code: i32,
     }
@@ -92,9 +92,8 @@ pub mod data_management{
         pub fn insert_data_to_device_data_table(db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>, data: &crate::data_management::DeviceData) -> Result<usize, ()> {
             let r = db.lock().unwrap().execute(
                 "INSERT INTO DEVICE_DATA(DEVICE_ID, TIMESTAMP, TIMESTRING, TEMPERATURE, HUMIDITY, VOLTAGE) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![data.device_serial_number, data.timestamp_msec as i64, data.time_string,
-                    data.temperature as f64, data.humidity as f64, data.voltage as f64
-                ],
+                rusqlite::params![data.device_serial_number, data.timestamp_msec, data.time_string,
+                    data.temperature, data.humidity, data.voltage],
             );
             match r {
                 Ok(inserted) => Ok(inserted),
@@ -138,8 +137,8 @@ pub mod data_management{
     }
 
     impl DeviceData {
-        pub fn new(device_serial_number: u32, timestamp_msec: u64, time_string: &str, temperature: f32, humidity: f32,
-                    voltage: f32, rssi: u32, error_code: i32) -> DeviceData {
+        pub fn new(device_serial_number: u32, timestamp_msec: i64, time_string: &str, temperature: f64, humidity: f64,
+                    voltage: f64, rssi: u32, error_code: i32) -> DeviceData {
                         DeviceData {
                             device_serial_number: device_serial_number,
                             timestamp_msec: timestamp_msec,
