@@ -4,13 +4,12 @@ extern crate mqtt;
 extern crate clap;
 extern crate time;
 extern crate uuid;
-extern crate threadpool;
 extern crate json;
-#[macro_use]
-extern crate log;
+extern crate chrono;
 extern crate env_logger;
 extern crate rusqlite;
-extern crate chrono;
+#[macro_use]
+extern crate log;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use data_management::data_management::{data_base, DeviceData};
@@ -27,15 +26,37 @@ use mqtt::{TopicFilter, TopicName};
 use mqtt::{Decodable, Encodable, QualityOfService};
 use std::thread;
 use std::time::Duration;
-use threadpool::ThreadPool;
-use chrono::prelude::*;
-use std::sync::{Arc, Mutex, mpsc};
+use chrono::prelude::Local;
+use std::sync::mpsc;
+
+enum SnMsgHandleError{
+    SnMsgParseError,
+    SnMsgConnError,
+    SnMsgPubError,
+    SnMsgDisconnError,
+    SnMsgPacketError,
+    SnMsgTopicNameError,
+}
+
+enum DbOp {
+    INSERT,
+    QUERY,
+}
+struct DbReq {
+    operation: DbOp,
+    data: DeviceData,
+}
+
+enum NetworkChange {
+    ESTABILISH,
+    LOSE,
+}
 
 fn generate_client_id() -> String {
     format!("/MQTT/rust/{}", Uuid::new_v4())
 }
 
-fn init_data_base(path: &str, name: &str) -> Result<Arc<Mutex<rusqlite::Connection>>, ()> {
+fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
     let db = data_base::open_data_base(path, name);
 
     let db = match db {
@@ -63,28 +84,17 @@ fn init_data_base(path: &str, name: &str) -> Result<Arc<Mutex<rusqlite::Connecti
     Ok(db)
 }
 
-enum SnMsgHandleError{
-    SnMsgParseError,
-    SnMsgConnError,
-    SnMsgConnAckError,
-    SnMsgPubError,
-    SnMsgDisconnError,
-    SnMsgPacketError,
-    SnMsgTopicNameError,
-    SnMsgBuffDataError,
-}
-
-fn sn_msg_pub(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMsgHandleError>
+fn pub_sn_msg(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMsgHandleError>
 {
     // 连接服务器
-    info!("Connecting to {:?} ... ", server);
+    //info!("Connecting to {:?} ... ", server);
     let mut stream = match TcpStream::connect(server){
         Ok(stream) => stream,
         Err(_err) => return Err(SnMsgHandleError::SnMsgConnError),
     };
-    info!("Connected!");
+    //info!("Connected!");
 
-    info!("Client identifier {:?}", sn);
+    //info!("Client identifier {:?}", sn);
     let mut conn = ConnectPacket::new("MQTT", sn);
     conn.set_clean_session(true);
     let mut buf = Vec::new();
@@ -101,14 +111,14 @@ fn sn_msg_pub(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMs
         Ok(connack) => connack,
         Err(_) => return Err(SnMsgHandleError::SnMsgPacketError),
     };
-    trace!("CONNACK {:?}", connack);
+    //trace!("CONNACK {:?}", connack);
 
     if connack.connect_return_code() != ConnectReturnCode::ConnectionAccepted {
-        info!(
-            "Failed to connect to server, return code {:?}",
-            connack.connect_return_code()
-        );
-        return Err(SnMsgHandleError::SnMsgConnAckError);
+        //info!(
+        //    "Failed to connect to server, return code {:?}",
+        //    connack.connect_return_code()
+        //);
+        //return Err(SnMsgHandleError::SnMsgConnAckError);
     }
     // 发布消息
     let topic_name = match TopicName::new(topic) {
@@ -139,78 +149,61 @@ fn sn_msg_pub(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMs
     Ok(())
 }
 
-fn sn_msg_handle(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMsgHandleError>
-{
+fn get_data_from_msg(msg: &str) -> Result<DeviceData, SnMsgHandleError> {
     let parsed = match json::parse(&msg) {
         Ok(parsed) => parsed,
         Err(_err) => {
-            error!("bad JSON string from sn {}: {}", sn, &msg);
             return Err(SnMsgHandleError::SnMsgParseError);
         },
     };
-    if let Err(_) = sn_msg_pub(&sn, &topic,&msg, server) {
-        error!("publish sn {} msg failed: {}", &sn, &msg);
-        let n = match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(n) => n,
-            Err(_) => Duration::from_secs(0),
-        };
-        let timestamp_msec = n.as_millis() as u64;
-        let time_string = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let id = match parsed["id"].as_u32() {
-            Some(id) => id,
-            None => 0,
-        };
-        let temperature = match parsed["temperature"].as_f32() {
-            Some(t) => t,
-            None => 0.0,
-        };
-        let humidity = match parsed["humidity"].as_f32() {
-            Some(h) => h,
-            None => 0.0,
-        };
-        let voltage = match parsed["voltage"].as_f32() {
-            Some(v) => v,
-            None => 0.0,
-        };
-        let status = match parsed["status"].as_i32() {
-            Some(s) => s,
-            None => 1,
-        };
-        let data = DeviceData{
-            device_serial_number: id,
-            timestamp_msec: timestamp_msec,
-            time_string: time_string,
-            temperature: temperature,
-            humidity: humidity,
-            voltage: voltage,
-            rssi: 0,
-            error_code: status,
-        };
-        let db = match data_base::open_data_base("./", "test.db") {
-            Ok(db) => db,
-            Err(err) => {
-                error!("open database  failed: {:?}", err);
-                return Err(SnMsgHandleError::SnMsgBuffDataError);
-            },
-        };
-        match data_base::insert_data_to_device_data_table(&db, &data) {
-            Ok(_ok) => {
-                info!("buffed data successfully");
-                return Ok(());
-            },
-            Err(err) => {
-                error!("buffed data  failed: {:?}", err);
-                return Err(SnMsgHandleError::SnMsgBuffDataError);
-            },
-        }
-        //match data_base::close_data_base(&db) {
-        //    Ok(_ok) => Ok(_ok) => info!("buffed data successfully"),
-        //    Err(err) => {
-        //        error!("Problem closing the database: {:?}", err)
-        //    },
-        //info!("data: {:#?}", data);
-    }
-    Ok(())
+    let n = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(n) => n,
+        Err(_) => Duration::from_secs(0),
+    };
+    let timestamp_msec = n.as_millis() as i64;
+    let time_string = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let id = match parsed["id"].as_u32() {
+        Some(id) => id,
+        None => return Err(SnMsgHandleError::SnMsgParseError),
+    };
+    let temperature = match parsed["temperature"].as_f64() {
+        Some(t) => t,
+        None => return Err(SnMsgHandleError::SnMsgParseError),
+    };
+    let humidity = match parsed["humidity"].as_f64() {
+        Some(h) => h,
+        None => return Err(SnMsgHandleError::SnMsgParseError),
+    };
+    let voltage = match parsed["voltage"].as_f64() {
+        Some(v) => v,
+        None => return Err(SnMsgHandleError::SnMsgParseError),
+    };
+    let status = match parsed["status"].as_i32() {
+        Some(s) => s,
+        None => return Err(SnMsgHandleError::SnMsgParseError),
+    };
+    let data = DeviceData{
+        device_serial_number: id,
+        timestamp_msec: timestamp_msec,
+        time_string: time_string,
+        temperature: temperature,
+        humidity: humidity,
+        voltage: voltage,
+        rssi: 0,
+        error_code: status,
+    };
+    Ok(data)
+}
+
+fn get_msg_from_data(data: &DeviceData) -> String {
+    let msg_json = json::object!{
+        id: data.device_serial_number,
+        temperature: data.temperature,
+        humidity: data.humidity,
+        voltage: data.voltage,
+        status: data.error_code
+    };
+    msg_json.dump()
 }
 
 fn connect_to_server(server: &str, client_id: &str, channel_filters: &Vec<(TopicFilter, QualityOfService)>) -> Result<TcpStream, ()> {
@@ -274,7 +267,7 @@ fn main() {
     env::set_var("RUST_LOG", env::var_os("RUST_LOG").unwrap_or_else(|| "info".into()));
     env_logger::init();
 
-    match init_data_base("./", "test.db") {
+    let db = match init_data_base("./", "test.db") {
         Ok(database) => database,
         Err(err) => {
             panic!("Problem opening the database: {:?}", err)
@@ -329,10 +322,13 @@ fn main() {
         .map(|c| (TopicFilter::new(c.to_string()).unwrap(), QualityOfService::Level0))
         .collect();
     let mut try_to_connect = true;
-    let thread_pool = ThreadPool::new(8);
+
+    let (insert_req, db_handle) = mpsc::channel();
+    let query_req =  mpsc::Sender::clone(&insert_req);
+    let (network_notify_tx, network_notify_rx) = mpsc::channel();
 
     // 从文件中获取传感器数据，如果和上次的不相同则处理
-    thread::spawn(|| {
+    thread::spawn(move || {
         let id = String::from("pepper_gw");
         let topic = String::from("sn_data");
         let mut last_msg = String::from("");
@@ -340,11 +336,32 @@ fn main() {
             match file_if::read_msg("./msg_data.txt") {
                 Ok(sn_msg) => {
                     if last_msg.ne(&sn_msg) && !sn_msg.is_empty() {
-                        let r = sn_msg_handle(&id, &topic, &sn_msg, "127.0.0.1:1884");
+                        let r = pub_sn_msg(&id, &topic, &sn_msg, "127.0.0.1:1884");
                         match r {
-                            Ok(_) => info!("handle sn msg successfully"),
-                            Err(_) => error!("handle msg failed: {}", sn_msg),
+                            Ok(_ok) => {
+                                info!("pub msg successfully: {}", &sn_msg);
+                                continue;
+                            },
+                            Err(_err) => {},
+                        }
+                        let device_data = match get_data_from_msg(&sn_msg) {
+                            Ok(data) => data,
+                            Err(_err) => {
+                                error!("parse {} failed", &sn_msg);
+                                continue;
+                            },
                         };
+                        let db_req = DbReq{
+                            operation: DbOp::INSERT,
+                            data: device_data,
+                        };
+                        match insert_req.send(db_req) {
+                            Err(err) => {
+                                error!("send insert req failed: {}", err);
+                                continue;
+                            },
+                            _ => {},
+                        }
                         last_msg = sn_msg.clone();
                     }
                 },
@@ -354,34 +371,146 @@ fn main() {
         }
     });
 
+    //离线数据处理
+    thread::spawn(move || {
+        loop {
+            match network_notify_rx.recv() {
+                Ok(network_change) => {
+                    match network_change {
+                        NetworkChange::LOSE => {
+                            continue;
+                        },
+                        _ => {},
+                    }
+                },
+                _ => {},
+            };
+            thread::sleep(Duration::new(1, 0));
+            let db_req = DbReq{
+                operation: DbOp::QUERY,
+                data: DeviceData::new(0, 0, "", 0.0, 0.0, 0.0, 0, 0),
+            };
+            match query_req.send(db_req) {
+                Err(err) => panic!("send querry req failed: {}", err),
+                _ => {},
+            }
+        }
+    });
+
+    //数据库操作
+    let _db_handle = thread::spawn( move || {
+        loop {
+            let db_req = match db_handle.recv() {
+                Ok(req) => req,
+                Err(_err) => continue,
+            };
+            match db_req.operation {
+                DbOp::INSERT => {
+                    match data_base::insert_data_to_device_data_table(&db, &db_req.data) {
+                        Ok(_ok) => {
+                            info!("buffed data successfully");
+                        },
+                        Err(err) => {
+                            error!("buffed data  failed: {:?}", err);
+                        },
+                    }
+                },
+                DbOp::QUERY => {
+                    let mut stmt = match data_base::querry_device_data(&db) {
+                        Ok(stmt) => stmt,
+                        Err(_err) => {
+                            error!("querry database failed");
+                            continue;
+                        },
+                    };
+                    let data_iter = match stmt.query_map(rusqlite::params![], |row| {
+                        let id: u32 = row.get(0)?;
+                        let data = DeviceData {
+                            device_serial_number: row.get(1)?,
+                            timestamp_msec: row.get(2)?,
+                            time_string: row.get(3)?,
+                            temperature: row.get(4)?,
+                            humidity: row.get(5)?,
+                            voltage: row.get(6)?,
+                            rssi: 0,
+                            error_code: 0,
+                        };
+                        Ok(
+                            (id, data)
+                        )
+                    }) {
+                        Ok(iter) => iter,
+                        Err(_err) => {
+                            error!("get data iter failed");
+                            continue;
+                        },
+                    };
+                    for tuple in data_iter {
+                        let (id, device_data) = match tuple {
+                            Ok(t) => t,
+                            Err(err) => {
+                                error!("get data from data iter failed: {}", err);
+                                continue;
+                            },
+                        };
+                        let client_id = String::from("pepper_gw");
+                        let topic = String::from("sn_data");
+                        let sn_msg = get_msg_from_data(&device_data);
+                        if let Ok(_) = pub_sn_msg(&client_id, &topic, &sn_msg, "127.0.0.1:1884") {
+                            //数据上传成功，删除数据库中对应的记录
+                            match data_base::delete_device_data(&db, id){
+                                Ok(_ok) => {
+                                    info!("handle offline data successfully");
+                                },
+                                Err(_err) => {
+                                    error!("delete {:?} from database failed", device_data);
+                                },
+                            }
+                        }
+                    }
+                },
+            }
+    
+        }
+    });
+
+    let mut stream: TcpStream;
     loop {
         if try_to_connect {
             info!("Connecting to {:?} ... ", server_addr);
             try_to_connect = false;
         }
-        let mut stream = match connect_to_server(&server_addr, &client_id, &channel_filters) {
+        stream = match connect_to_server(&server_addr, &client_id, &channel_filters) {
             Ok(stream) => stream,
             Err(_err) => {
                 thread::sleep(Duration::new(10, 0));
                 continue;
             },
         };
-
+        match network_notify_tx.send(NetworkChange::ESTABILISH) {
+            _ => {},
+        }
         let (main_thread_tx, ping_thread_rx) = mpsc::channel();
         let mut stream_clone = stream.try_clone().unwrap();
         let ping_thread = thread::spawn(move || {
-            let keep_alive = 5;
+            let keep_alive = 10;
             let mut last_ping_time = 0;
             let mut next_ping_time = last_ping_time + (keep_alive as f32 * 0.9) as i64;
             loop {
                 match ping_thread_rx.try_recv() {
-                    Ok(_ok) => break,
+                    Ok(network_change) => {
+                        match network_change {
+                            NetworkChange::LOSE => {
+                                break;
+                            },
+                            _ => {},
+                        }
+                    },
                     _ => {},
                 };
                 let current_timestamp = time::get_time().sec;
                 if keep_alive > 0 && current_timestamp >= next_ping_time {
                     //info!("Sending PINGREQ to broker");
-
                     let pingreq_packet = PingreqPacket::new();
 
                     let mut buf = Vec::new();
@@ -400,13 +529,12 @@ fn main() {
                 Ok(pk) => pk,
                 Err(_err) => {
                     //error!("Error in receiving packet {}", err);
-                    match main_thread_tx.send("quit") {
+                    match main_thread_tx.send(NetworkChange::LOSE) {
                         Ok(_ok) => {},
                         Err(_err) => {},
                     }
                     match ping_thread.join() {
-                        Ok(_ok) => {},
-                        Err(_err) => {},
+                        _ => {},
                     }
                     break;
                 }
@@ -426,29 +554,12 @@ fn main() {
                         }
                     };
                     info!("PUBLISH ({}): {}", publ.topic_name(), msg);
-                    let mut sn_topic = Vec::with_capacity(4);
-                    let topic_name = String::from(&publ.topic_name()[..]);
-                    let v: Vec<&str> = topic_name.split('/').collect();
-                    // 不足 4 的时候应该会有问题
-                    for i in 0..4 {
-                        sn_topic.push(String::from(v[i]));
-                    }
-                    if sn_topic[0] == "client" {
-                        //let client_id = &sn_topic[1];
-                        //let topic = &sn_topic[3];
-                        let sn_msg = String::from(msg);
-                        thread_pool.execute(move || {
-                            let r = sn_msg_handle(&sn_topic[1], &sn_topic[3],
-                                        &sn_msg, "127.0.0.1:1884");
-                            match r {
-                                Ok(_) => info!("handle sn msg successfully"),
-                                Err(_) => error!("handle sn({}) msg failed", &sn_topic[1]),
-                            };
-                        })
-                    }
                 }
                 _ => {}
             }
+        }
+        match network_notify_tx.send(NetworkChange::LOSE) {
+            _ => {},
         }
         error!("lose connection to {}", &server_addr);
         try_to_connect = true;

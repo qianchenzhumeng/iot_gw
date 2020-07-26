@@ -16,6 +16,5 @@ clap = "2"
 env_logger = "0.7"
 time = "0.1"
 uuid = { version = "0.8", features = ["v4"] }
-threadpool = "1.8.1"
 json = "0.12.4"
 chrono = "0.4.13"
