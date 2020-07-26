@@ -29,6 +29,7 @@ use std::time::Duration;
 use chrono::prelude::Local;
 use std::sync::mpsc;
 
+#[derive(Debug)]
 enum SnMsgHandleError{
     SnMsgParseError,
     SnMsgConnError,
@@ -50,6 +51,11 @@ struct DbReq {
 enum NetworkChange {
     ESTABILISH,
     LOSE,
+}
+
+struct NetworkNotify {
+    stream: Option<TcpStream>,
+    event: NetworkChange,
 }
 
 fn generate_client_id() -> String {
@@ -145,6 +151,26 @@ fn pub_sn_msg(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMs
     match stream.write_all(&buf[..]) {
         Ok(_) => {},
         Err(_err) => return Err(SnMsgHandleError::SnMsgDisconnError),
+    };
+    Ok(())
+}
+
+fn pub_sn_msg_use_stream(topic: &str, msg: &str, stream: &mut TcpStream) -> Result<(), SnMsgHandleError>
+{
+    // 发布消息
+    let topic_name = match TopicName::new(topic) {
+        Ok(topic_name) => topic_name,
+        Err(_)  => return Err(SnMsgHandleError::SnMsgTopicNameError),
+    };
+    let publish_packet = PublishPacket::new(topic_name, QoSWithPacketIdentifier::Level0, msg.clone());
+    let mut buf = Vec::new();
+    match publish_packet.encode(&mut buf) {
+        Ok(_) => {},
+        Err(_) => return Err(SnMsgHandleError::SnMsgPacketError),
+    };
+    match stream.write_all(&buf[..]) {
+        Ok(_) => {},
+        Err(_err) => return Err(SnMsgHandleError::SnMsgPubError),
     };
     Ok(())
 }
@@ -326,24 +352,74 @@ fn main() {
     let (insert_req, db_handle) = mpsc::channel();
     let query_req =  mpsc::Sender::clone(&insert_req);
     let (network_notify_tx, network_notify_rx) = mpsc::channel();
+    let (tcp_stream_tx, tcp_stream_rx) = mpsc::channel();
 
     // 从文件中获取传感器数据，如果和上次的不相同则处理
     thread::spawn(move || {
         let id = String::from("pepper_gw");
         let topic = String::from("sn_data");
         let mut last_msg = String::from("");
+        let mut sn_pub_stream: TcpStream;
+        let mut network_ok = false;
+        loop{
+            match tcp_stream_rx.try_recv() {
+                Ok(notification) => {
+                    let notification: NetworkNotify = notification;
+                    match notification.event {
+                        NetworkChange::ESTABILISH => {
+                            match notification.stream {
+                                Some(stream) => {
+                                    sn_pub_stream = stream;
+                                    network_ok = true;
+                                    break;
+                                },
+                                _ => {},
+                            };
+                        },
+                        NetworkChange::LOSE => {
+                            network_ok = false;
+                        },
+                    }
+                },
+                Err(_err) => {},
+            }
+            thread::sleep(Duration::new(1, 0));
+        }
         loop {
             match file_if::read_msg("./msg_data.txt") {
                 Ok(sn_msg) => {
                     if last_msg.ne(&sn_msg) && !sn_msg.is_empty() {
-                        let r = pub_sn_msg(&id, &topic, &sn_msg, "127.0.0.1:1884");
-                        match r {
-                            Ok(_ok) => {
-                                info!("pub msg successfully: {}", &sn_msg);
-                                continue;
+                        match tcp_stream_rx.try_recv() {
+                            Ok(notification) => {
+                                let notification: NetworkNotify = notification;
+                                match notification.event {
+                                    NetworkChange::ESTABILISH => {
+                                        match notification.stream {
+                                            Some(stream) => {
+                                                sn_pub_stream = stream;
+                                                network_ok = true;
+                                            },
+                                            _ => {},
+                                        };
+                                    },
+                                    NetworkChange::LOSE => {
+                                        network_ok = false;
+                                    },
+                                }
                             },
                             Err(_err) => {},
                         }
+                        if network_ok {
+                            let r = pub_sn_msg_use_stream(&topic, &sn_msg, &mut sn_pub_stream);
+                            match r {
+                                Ok(_ok) => {
+                                    info!("pub msg successfully: {}", &sn_msg);
+                                    continue;
+                                    },
+                                Err(err) => error!("pub msg failed: {:#?}", err),
+                            }
+                        }
+
                         let device_data = match get_data_from_msg(&sn_msg) {
                             Ok(data) => data,
                             Err(_err) => {
@@ -371,6 +447,12 @@ fn main() {
         }
     });
 
+    //发布sn数据
+    thread::spawn(move || {
+        loop {
+
+        }
+    });
     //离线数据处理
     thread::spawn(move || {
         loop {
@@ -391,7 +473,6 @@ fn main() {
                 data: DeviceData::new(0, 0, "", 0.0, 0.0, 0.0, 0, 0),
             };
             match query_req.send(db_req) {
-                Err(err) => panic!("send querry req failed: {}", err),
                 _ => {},
             }
         }
@@ -474,13 +555,12 @@ fn main() {
         }
     });
 
-    let mut stream: TcpStream;
     loop {
         if try_to_connect {
             info!("Connecting to {:?} ... ", server_addr);
             try_to_connect = false;
         }
-        stream = match connect_to_server(&server_addr, &client_id, &channel_filters) {
+        let mut stream = match connect_to_server(&server_addr, &client_id, &channel_filters) {
             Ok(stream) => stream,
             Err(_err) => {
                 thread::sleep(Duration::new(10, 0));
@@ -492,6 +572,15 @@ fn main() {
         }
         let (main_thread_tx, ping_thread_rx) = mpsc::channel();
         let mut stream_clone = stream.try_clone().unwrap();
+        let mut sn_pub_stream = stream.try_clone().unwrap();
+        let msg = NetworkNotify{
+            stream: Some(sn_pub_stream),
+            event: NetworkChange::ESTABILISH,
+        };
+        match tcp_stream_tx.send(msg) {
+            Ok(_ok) => {},
+            Err(err) => error!("send NetworkNotify failed: {}", err),
+        }
         let ping_thread = thread::spawn(move || {
             let keep_alive = 10;
             let mut last_ping_time = 0;
@@ -560,6 +649,14 @@ fn main() {
         }
         match network_notify_tx.send(NetworkChange::LOSE) {
             _ => {},
+        }
+        let msg = NetworkNotify{
+            stream: None,
+            event: NetworkChange::LOSE,
+        };
+        match tcp_stream_tx.send(msg) {
+            Ok(_ok) => {},
+            Err(err) => error!("send NetworkNotify failed: {}", err),
         }
         error!("lose connection to {}", &server_addr);
         try_to_connect = true;
