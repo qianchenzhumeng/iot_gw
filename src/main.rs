@@ -32,9 +32,9 @@ use std::sync::mpsc;
 #[derive(Debug)]
 enum SnMsgHandleError{
     SnMsgParseError,
-    SnMsgConnError,
+    //SnMsgConnError,
     SnMsgPubError,
-    SnMsgDisconnError,
+    //SnMsgDisconnError,
     SnMsgPacketError,
     SnMsgTopicNameError,
 }
@@ -42,9 +42,11 @@ enum SnMsgHandleError{
 enum DbOp {
     INSERT,
     QUERY,
+    DELETE,
 }
 struct DbReq {
     operation: DbOp,
+    id: u32,
     data: DeviceData,
 }
 
@@ -89,7 +91,7 @@ fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
 
     Ok(db)
 }
-
+/*
 fn pub_sn_msg(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMsgHandleError>
 {
     // 连接服务器
@@ -154,7 +156,7 @@ fn pub_sn_msg(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMs
     };
     Ok(())
 }
-
+*/
 fn pub_sn_msg_use_stream(topic: &str, msg: &str, stream: &mut TcpStream) -> Result<(), SnMsgHandleError>
 {
     // 发布消息
@@ -351,53 +353,31 @@ fn main() {
 
     let (insert_req, db_handle) = mpsc::channel();
     let query_req =  mpsc::Sender::clone(&insert_req);
-    let (network_notify_tx, network_notify_rx) = mpsc::channel();
-    let (tcp_stream_tx, tcp_stream_rx) = mpsc::channel();
+    let (db_query_rep_tx, db_query_rep_rx) = mpsc::channel();
+    let db_delete_req_tx =  mpsc::Sender::clone(&insert_req);
+    let (original_data_pub_strem_tx, original_data_pub_strem_rx) = mpsc::channel();
+    let (offine_data_pub_stream_tx, offine_data_pub_stream_rx) = mpsc::channel();
+    let (db_delete_rep_tx, db_delete_rep_rx) = mpsc::channel();
 
     // 从文件中获取传感器数据，如果和上次的不相同则处理
     thread::spawn(move || {
-        let id = String::from("pepper_gw");
         let topic = String::from("sn_data");
         let mut last_msg = String::from("");
-        let mut sn_pub_stream: TcpStream;
+        let mut original_data_pub_strem_option: Option<TcpStream> = None;
         let mut network_ok = false;
-        loop{
-            match tcp_stream_rx.try_recv() {
-                Ok(notification) => {
-                    let notification: NetworkNotify = notification;
-                    match notification.event {
-                        NetworkChange::ESTABILISH => {
-                            match notification.stream {
-                                Some(stream) => {
-                                    sn_pub_stream = stream;
-                                    network_ok = true;
-                                    break;
-                                },
-                                _ => {},
-                            };
-                        },
-                        NetworkChange::LOSE => {
-                            network_ok = false;
-                        },
-                    }
-                },
-                Err(_err) => {},
-            }
-            thread::sleep(Duration::new(1, 0));
-        }
         loop {
             match file_if::read_msg("./msg_data.txt") {
                 Ok(sn_msg) => {
                     if last_msg.ne(&sn_msg) && !sn_msg.is_empty() {
-                        match tcp_stream_rx.try_recv() {
+                        match original_data_pub_strem_rx.try_recv() {
                             Ok(notification) => {
                                 let notification: NetworkNotify = notification;
                                 match notification.event {
                                     NetworkChange::ESTABILISH => {
                                         match notification.stream {
                                             Some(stream) => {
-                                                sn_pub_stream = stream;
                                                 network_ok = true;
+                                                original_data_pub_strem_option = Some(stream);
                                             },
                                             _ => {},
                                         };
@@ -410,16 +390,20 @@ fn main() {
                             Err(_err) => {},
                         }
                         if network_ok {
-                            let r = pub_sn_msg_use_stream(&topic, &sn_msg, &mut sn_pub_stream);
-                            match r {
-                                Ok(_ok) => {
-                                    info!("pub msg successfully: {}", &sn_msg);
-                                    continue;
-                                    },
-                                Err(err) => error!("pub msg failed: {:#?}", err),
+                            match original_data_pub_strem_option {
+                                Some(ref mut stream) => {
+                                    let r = pub_sn_msg_use_stream(&topic, &sn_msg, stream);
+                                    match r {
+                                        Ok(_ok) => {
+                                            info!("pub msg successfully: {}", &sn_msg);
+                                            continue;
+                                            },
+                                        Err(err) => error!("pub msg failed: {:#?}", err),
+                                    }
+                                },
+                                None => {},
                             }
                         }
-
                         let device_data = match get_data_from_msg(&sn_msg) {
                             Ok(data) => data,
                             Err(_err) => {
@@ -429,6 +413,7 @@ fn main() {
                         };
                         let db_req = DbReq{
                             operation: DbOp::INSERT,
+                            id: 0,
                             data: device_data,
                         };
                         match insert_req.send(db_req) {
@@ -443,37 +428,89 @@ fn main() {
                 },
                 Err(_err) => {},
             };
-            thread::sleep(Duration::new(1, 0));
+            thread::sleep(Duration::from_secs(1));
         }
     });
 
-    //发布sn数据
-    thread::spawn(move || {
-        loop {
-
-        }
-    });
     //离线数据处理
     thread::spawn(move || {
+        let mut offine_data_pub_stream_option: Option<TcpStream> = None;
         loop {
-            match network_notify_rx.recv() {
-                Ok(network_change) => {
-                    match network_change {
+            match offine_data_pub_stream_rx.recv() {
+                Ok(notification) => {
+                    let notification: NetworkNotify = notification;
+                    match notification.event {
+                        NetworkChange::ESTABILISH => {
+                            match notification.stream {
+                                Some(stream) => {
+                                    offine_data_pub_stream_option = Some(stream);
+                                },
+                                _ => {},
+                            };
+                        },
                         NetworkChange::LOSE => {
                             continue;
                         },
-                        _ => {},
                     }
                 },
-                _ => {},
-            };
-            thread::sleep(Duration::new(1, 0));
+                Err(_err) => {},
+            }
             let db_req = DbReq{
                 operation: DbOp::QUERY,
+                id: 0,
                 data: DeviceData::new(0, 0, "", 0.0, 0.0, 0.0, 0, 0),
             };
             match query_req.send(db_req) {
-                _ => {},
+                Ok(_ok) => {
+                    match db_query_rep_rx.recv() {
+                        Ok(vec) => {
+                            for tuple in vec {
+                                let (id, device_data) = match tuple {
+                                    Ok(t) => t,
+                                    Err(err) => {
+                                        error!("get data from data iter failed: {}", err);
+                                        continue;
+                                    },
+                                };
+                                let topic = String::from("sn_data");
+                                let sn_msg = get_msg_from_data(&device_data);
+                                match offine_data_pub_stream_option {
+                                            Some(ref mut stream) => {
+                                                if let Ok(_) = pub_sn_msg_use_stream(&topic, &sn_msg, stream) {
+                                                    //数据上传成功，删除数据库中对应的记录
+                                                    let db_delete_req = DbReq{
+                                                        operation: DbOp::DELETE,
+                                                        id: id,
+                                                        data: DeviceData::new(0, 0, "", 0.0, 0.0, 0.0, 0, 0),
+                                                    };
+                                                    match db_delete_req_tx.send(db_delete_req) {
+                                                        Ok(_ok) => {
+                                                            match db_delete_rep_rx.recv() {
+                                                                Ok(r) => {
+                                                                    if r {
+                                                                        info!("handle offline data successfully");
+                                                                    } else {
+                                                                        error!("delete offline data after publishing failed");
+                                                                    }
+                                                                },
+                                                                Err(_err) => {},
+                                                            }
+                                                        },
+                                                        Err(err) => {
+                                                            error!("send offline data delete req failed: {}", err);
+                                                        },
+                                                    }
+                                                }
+                                            },
+                                            None => {},
+                                }
+                                thread::sleep(Duration::from_millis(100));
+                            }
+                        },
+                        Err(_err) => {},
+                    }
+                },
+                Err(_err) => {},
             }
         }
     });
@@ -526,28 +563,28 @@ fn main() {
                             continue;
                         },
                     };
+                    let mut vec = Vec::new();
                     for tuple in data_iter {
-                        let (id, device_data) = match tuple {
-                            Ok(t) => t,
-                            Err(err) => {
-                                error!("get data from data iter failed: {}", err);
-                                continue;
-                            },
-                        };
-                        let client_id = String::from("pepper_gw");
-                        let topic = String::from("sn_data");
-                        let sn_msg = get_msg_from_data(&device_data);
-                        if let Ok(_) = pub_sn_msg(&client_id, &topic, &sn_msg, "127.0.0.1:1884") {
-                            //数据上传成功，删除数据库中对应的记录
-                            match data_base::delete_device_data(&db, id){
-                                Ok(_ok) => {
-                                    info!("handle offline data successfully");
-                                },
-                                Err(_err) => {
-                                    error!("delete {:?} from database failed", device_data);
-                                },
+                        vec.push(tuple);
+                    }
+                    match db_query_rep_tx.send(vec) {
+                        _ => {},
+                    }
+                },
+                DbOp::DELETE => {
+                    match data_base::delete_device_data(&db, db_req.id){
+                        Ok(_ok) => {
+                            match db_delete_rep_tx.send(true) {
+                                Ok(_ok) => {},
+                                Err(err) => error!("send delete rep failed: {}", err),
                             }
-                        }
+                        },
+                        Err(_err) => {
+                            match db_delete_rep_tx.send(false) {
+                                Ok(_ok) => {},
+                                Err(err) => error!("send delete rep failed: {}", err),
+                            }
+                        },
                     }
                 },
             }
@@ -567,20 +604,38 @@ fn main() {
                 continue;
             },
         };
-        match network_notify_tx.send(NetworkChange::ESTABILISH) {
-            _ => {},
-        }
+
         let (main_thread_tx, ping_thread_rx) = mpsc::channel();
         let mut stream_clone = stream.try_clone().unwrap();
-        let mut sn_pub_stream = stream.try_clone().unwrap();
-        let msg = NetworkNotify{
-            stream: Some(sn_pub_stream),
-            event: NetworkChange::ESTABILISH,
-        };
-        match tcp_stream_tx.send(msg) {
-            Ok(_ok) => {},
-            Err(err) => error!("send NetworkNotify failed: {}", err),
+
+        match stream.try_clone() {
+            Ok(original_data_pub_strem) => {
+                let msg = NetworkNotify{
+                    stream: Some(original_data_pub_strem),
+                    event: NetworkChange::ESTABILISH,
+                };
+                match original_data_pub_strem_tx.send(msg) {
+                    Ok(_ok) => {},
+                    Err(err) => error!("send NetworkNotify failed: {}", err),
+                }
+            },
+            Err(err) => error!("clone original_data_pub_strem failed: {}", err),
         }
+
+        match stream.try_clone() {
+            Ok(offine_data_pub_stream) => {
+                let msg = NetworkNotify{
+                    stream: Some(offine_data_pub_stream),
+                    event: NetworkChange::ESTABILISH,
+                };
+                match offine_data_pub_stream_tx.send(msg) {
+                    Ok(_ok) => {},
+                    Err(err) => error!("send NetworkNotify failed: {}", err),
+                }
+            },
+            Err(err) => error!("clone offine_data_pub_stream failed: {}", err),
+        }
+
         let ping_thread = thread::spawn(move || {
             let keep_alive = 10;
             let mut last_ping_time = 0;
@@ -647,14 +702,19 @@ fn main() {
                 _ => {}
             }
         }
-        match network_notify_tx.send(NetworkChange::LOSE) {
-            _ => {},
+        let msg = NetworkNotify{
+            stream: None,
+            event: NetworkChange::LOSE,
+        };
+        match offine_data_pub_stream_tx .send(msg) {
+            Ok(_ok) => {},
+            Err(err) => error!("send NetworkNotify failed: {}", err),
         }
         let msg = NetworkNotify{
             stream: None,
             event: NetworkChange::LOSE,
         };
-        match tcp_stream_tx.send(msg) {
+        match original_data_pub_strem_tx.send(msg) {
             Ok(_ok) => {},
             Err(err) => error!("send NetworkNotify failed: {}", err),
         }
