@@ -8,6 +8,8 @@ extern crate json;
 extern crate chrono;
 extern crate env_logger;
 extern crate rusqlite;
+extern crate toml;
+extern crate serde_derive;
 #[macro_use]
 extern crate log;
 
@@ -19,7 +21,6 @@ use std::io::Write;
 use std::net::TcpStream;
 use std::str;
 use clap::{App, Arg};
-use uuid::Uuid;
 use mqtt::control::variable_header::ConnectReturnCode;
 use mqtt::packet::*;
 use mqtt::{TopicFilter, TopicName};
@@ -28,6 +29,9 @@ use std::thread;
 use std::time::Duration;
 use chrono::prelude::Local;
 use std::sync::mpsc;
+
+use std::fs;
+use serde_derive::Deserialize;
 
 #[derive(Debug)]
 enum SnMsgHandleError{
@@ -60,8 +64,41 @@ struct NetworkNotify {
     event: NetworkChange,
 }
 
-fn generate_client_id() -> String {
-    format!("/MQTT/rust/{}", Uuid::new_v4())
+#[derive(Deserialize)]
+struct Config {
+    server: Server,
+    client: Client,
+    topic: Topic,
+    msg: Msg,
+    database: Database,
+}
+
+#[derive(Deserialize)]
+struct Server {
+    address: String,
+}
+
+#[derive(Deserialize)]
+struct Client {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct Topic {
+    sub_topic: String,
+    pub_topic: String,
+}
+
+#[derive(Deserialize)]
+struct Msg {
+    example: String,
+    template: String,
+}
+
+#[derive(Deserialize)]
+struct Database {
+    path: String,
+    name: String,
 }
 
 fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
@@ -295,61 +332,33 @@ fn main() {
     env::set_var("RUST_LOG", env::var_os("RUST_LOG").unwrap_or_else(|| "info".into()));
     env_logger::init();
 
-    let db = match init_data_base("./", "test.db") {
+    let matches = App::new("pepper_gateway")
+        .author("Yu Yu <qianchenzhumeng@live.cn>")
+        .arg(
+            Arg::with_name("CONFIG_FILE")
+                .short("c")
+                .long("config-file")
+                .takes_value(true)
+                .required(true)
+                .help("specify the broker config file."),
+        ).get_matches();
+
+    let toml_string = fs::read_to_string("gw.toml").unwrap();
+    let config: Config = toml::from_str(&toml_string).unwrap();
+    let server_addr = config.server.address;
+    let client_id = config.client.id;
+    let pub_topic = config.topic.pub_topic;
+    let channel_filters: Vec<(TopicFilter, QualityOfService)> = vec![(TopicFilter::new(config.topic.sub_topic).unwrap(), QualityOfService::Level0)];
+    let database_path = config.database.path;
+    let database_name = config.database.name;
+    let mut try_to_connect = true;
+
+    let db = match init_data_base(&database_path, &database_name) {
         Ok(database) => database,
         Err(err) => {
             panic!("Problem opening the database: {:?}", err)
         },
     };
-    
-    let matches = App::new("sub-client")
-        .author("Y. T. Chung <zonyitoo@gmail.com>")
-        .arg(
-            Arg::with_name("SERVER")
-                .short("S")
-                .long("server")
-                .takes_value(true)
-                .required(true)
-                .help("MQTT server address (host:port)"),
-        ).arg(
-            Arg::with_name("SUBSCRIBE")
-                .short("s")
-                .long("subscribe")
-                .takes_value(true)
-                .multiple(true)
-                .required(true)
-                .help("Channel filter to subscribe"),
-        ).arg(
-            Arg::with_name("USER_NAME")
-                .short("u")
-                .long("username")
-                .takes_value(true)
-                .help("Login user name"),
-        ).arg(
-            Arg::with_name("PASSWORD")
-                .short("p")
-                .long("password")
-                .takes_value(true)
-                .help("Password"),
-        ).arg(
-            Arg::with_name("CLIENT_ID")
-                .short("i")
-                .long("client-identifier")
-                .takes_value(true)
-                .help("Client identifier"),
-        ).get_matches();
-
-    let server_addr = matches.value_of("SERVER").unwrap();
-    let client_id = matches
-        .value_of("CLIENT_ID")
-        .map(|x| x.to_owned())
-        .unwrap_or_else(generate_client_id);
-    let channel_filters: Vec<(TopicFilter, QualityOfService)> = matches
-        .values_of("SUBSCRIBE")
-        .unwrap()
-        .map(|c| (TopicFilter::new(c.to_string()).unwrap(), QualityOfService::Level0))
-        .collect();
-    let mut try_to_connect = true;
 
     let (insert_req, db_handle) = mpsc::channel();
     let query_req =  mpsc::Sender::clone(&insert_req);
@@ -359,9 +368,9 @@ fn main() {
     let (offine_data_pub_stream_tx, offine_data_pub_stream_rx) = mpsc::channel();
     let (db_delete_rep_tx, db_delete_rep_rx) = mpsc::channel();
 
+    let original_data_pub_topic = pub_topic.clone();
     // 从文件中获取传感器数据，如果和上次的不相同则处理
     thread::spawn(move || {
-        let topic = String::from("sn_data");
         let mut last_msg = String::from("");
         let mut original_data_pub_strem_option: Option<TcpStream> = None;
         let mut network_ok = false;
@@ -392,7 +401,7 @@ fn main() {
                         if network_ok {
                             match original_data_pub_strem_option {
                                 Some(ref mut stream) => {
-                                    let r = pub_sn_msg_use_stream(&topic, &sn_msg, stream);
+                                    let r = pub_sn_msg_use_stream(&original_data_pub_topic, &sn_msg, stream);
                                     match r {
                                         Ok(_ok) => {
                                             info!("pub msg successfully: {}", &sn_msg);
@@ -432,6 +441,7 @@ fn main() {
         }
     });
 
+    let offine_data_pub_topic = pub_topic.clone();
     //离线数据处理
     thread::spawn(move || {
         let mut offine_data_pub_stream_option: Option<TcpStream> = None;
@@ -472,11 +482,10 @@ fn main() {
                                         continue;
                                     },
                                 };
-                                let topic = String::from("sn_data");
                                 let sn_msg = get_msg_from_data(&device_data);
                                 match offine_data_pub_stream_option {
                                             Some(ref mut stream) => {
-                                                if let Ok(_) = pub_sn_msg_use_stream(&topic, &sn_msg, stream) {
+                                                if let Ok(_) = pub_sn_msg_use_stream(&offine_data_pub_topic, &sn_msg, stream) {
                                                     //数据上传成功，删除数据库中对应的记录
                                                     let db_delete_req = DbReq{
                                                         operation: DbOp::DELETE,
