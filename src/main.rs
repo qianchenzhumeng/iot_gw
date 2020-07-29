@@ -10,28 +10,24 @@ extern crate env_logger;
 extern crate rusqlite;
 extern crate toml;
 extern crate serde_derive;
+extern crate data_template;
 #[macro_use]
 extern crate log;
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use data_management::data_management::{data_base, DeviceData};
 use sensor_interface::file_if;
-use std::env;
+use std::{env, fs, thread, str};
 use std::io::Write;
 use std::net::TcpStream;
-use std::str;
 use clap::{App, Arg};
 use mqtt::control::variable_header::ConnectReturnCode;
 use mqtt::packet::*;
-use mqtt::{TopicFilter, TopicName};
-use mqtt::{Decodable, Encodable, QualityOfService};
-use std::thread;
-use std::time::Duration;
+use mqtt::{Decodable, Encodable, QualityOfService, TopicFilter, TopicName};
 use chrono::prelude::Local;
 use std::sync::mpsc;
-
-use std::fs;
 use serde_derive::Deserialize;
+use data_template::{Template, Model, Value};
 
 #[derive(Debug)]
 enum SnMsgHandleError{
@@ -41,6 +37,7 @@ enum SnMsgHandleError{
     //SnMsgDisconnError,
     SnMsgPacketError,
     SnMsgTopicNameError,
+    //SnMsgConvertError,
 }
 
 enum DbOp {
@@ -231,6 +228,10 @@ fn get_data_from_msg(msg: &str) -> Result<DeviceData, SnMsgHandleError> {
         Some(id) => id,
         None => return Err(SnMsgHandleError::SnMsgParseError),
     };
+    let name = match parsed["name"].as_str() {
+        Some(name) => name.to_string(),
+        None => return Err(SnMsgHandleError::SnMsgParseError),
+    };
     let temperature = match parsed["temperature"].as_f64() {
         Some(t) => t,
         None => return Err(SnMsgHandleError::SnMsgParseError),
@@ -249,6 +250,7 @@ fn get_data_from_msg(msg: &str) -> Result<DeviceData, SnMsgHandleError> {
     };
     let data = DeviceData{
         device_serial_number: id,
+        name: name,
         timestamp_msec: timestamp_msec,
         time_string: time_string,
         temperature: temperature,
@@ -263,6 +265,7 @@ fn get_data_from_msg(msg: &str) -> Result<DeviceData, SnMsgHandleError> {
 fn get_msg_from_data(data: &DeviceData) -> String {
     let msg_json = json::object!{
         id: data.device_serial_number,
+        name: data.name.clone(),
         temperature: data.temperature,
         humidity: data.humidity,
         voltage: data.voltage,
@@ -328,6 +331,82 @@ fn connect_to_server(server: &str, client_id: &str, channel_filters: &Vec<(Topic
     Ok(stream)
 }
 
+fn format_msg(original: &str, template_str: &str) -> Result<String, ()> {
+    let parsed = match json::parse(&original) {
+        Ok(parsed) => parsed,
+        Err(_err) => return Err(()),
+    };
+    let template = Template::new(template_str);
+    let mut msg = template_str.to_string();
+    match template.get_value_models() {
+        Ok(value_models) => {
+            for model in value_models {
+                match model.get_label() {
+                    Ok(label) => {
+                        //replace
+                        let value_model = match model {
+                            Model::Value(value_model) => value_model,
+                        };
+                        if parsed[&label].is_string() {
+                            let string = match parsed[&label].as_str() {
+                                Some(string) => string,
+                                None => "",
+                            };
+                            msg = msg.replace(&value_model, &("\"".to_owned() + &string + "\""));
+                        } else if parsed[&label].is_number() {
+                            let num = match parsed[&label].as_number() {
+                                Some(num) => num,
+                                None => {
+                                    warn!("parse JSON number failed");
+                                    return Err(());
+                                },
+                            };
+                            msg = msg.replace(&value_model, &num.to_string());
+                        } else {
+                            warn!("unsurported data type");
+                        }
+                    },
+                    Err(err) => {
+                        warn!("get label from model {:#?} failed: {:#?}", model, err);
+                    },
+                }
+                
+            }
+        },
+        Err(_err) => {},
+    }
+    match template.get_call_models() {
+        Ok(call_models) => {
+            for model in call_models {
+                match model.get_call_result() {
+                    Ok(value) => {
+                        let call_model = match model {
+                            Model::Value(call_model) => call_model,
+                        };
+                        match value {
+                            Value::Number(num) => {
+                                msg = msg.replace(&call_model, &num.to_string());
+                            },
+                            Value::String(string) => {
+                                msg = msg.replace(&call_model, &string);
+                            },
+                        }
+                    },
+                    Err(err) => {
+                        error!("get call result failed: {:#?}", err);
+                    },
+                }
+            }
+        },
+        Err(_err) => {},
+    }
+    if let Err(_err) = json::parse(&msg) {
+        error!("msg converted was not a JSON string: {}", msg);
+        return Err(());
+    }
+    Ok(msg)
+}
+
 fn main() {
     env::set_var("RUST_LOG", env::var_os("RUST_LOG").unwrap_or_else(|| "info".into()));
     env_logger::init();
@@ -343,7 +422,8 @@ fn main() {
                 .help("specify the broker config file."),
         ).get_matches();
 
-    let toml_string = fs::read_to_string("gw.toml").unwrap();
+    let config_file = matches.value_of("CONFIG_FILE").unwrap();
+    let toml_string = fs::read_to_string(&config_file).unwrap();
     let config: Config = toml::from_str(&toml_string).unwrap();
     let server_addr = config.server.address;
     let client_id = config.client.id;
@@ -351,7 +431,18 @@ fn main() {
     let channel_filters: Vec<(TopicFilter, QualityOfService)> = vec![(TopicFilter::new(config.topic.sub_topic).unwrap(), QualityOfService::Level0)];
     let database_path = config.database.path;
     let database_name = config.database.name;
+    let template = config.msg.template;
+    let msg_example = config.msg.example;
     let mut try_to_connect = true;
+
+    // 数据模板校验
+    let check = match format_msg(&msg_example, &template) {
+        Ok(string) => string,
+        Err(err) => panic!("please check msg.example and msg.template if config-file: {:#?}", err),
+    };
+    if let Err(_) = json::parse(&check) {
+        panic!("please check msg.example and msg.template config-file: {}", config_file);
+    }
 
     let db = match init_data_base(&database_path, &database_name) {
         Ok(database) => database,
@@ -369,6 +460,7 @@ fn main() {
     let (db_delete_rep_tx, db_delete_rep_rx) = mpsc::channel();
 
     let original_data_pub_topic = pub_topic.clone();
+    let original_data_pub_template = template.clone();
     // 从文件中获取传感器数据，如果和上次的不相同则处理
     thread::spawn(move || {
         let mut last_msg = String::from("");
@@ -401,10 +493,17 @@ fn main() {
                         if network_ok {
                             match original_data_pub_strem_option {
                                 Some(ref mut stream) => {
-                                    let r = pub_sn_msg_use_stream(&original_data_pub_topic, &sn_msg, stream);
+                                    let pub_msg = match format_msg(&sn_msg, &original_data_pub_template) {
+                                        Ok(pub_msg) => pub_msg,
+                                        Err(err) => {
+                                            error!("convert from data template failed: {:#?}", err);
+                                            continue;
+                                        },
+                                    };
+                                    let r = pub_sn_msg_use_stream(&original_data_pub_topic, &pub_msg, stream);
                                     match r {
                                         Ok(_ok) => {
-                                            info!("pub msg successfully: {}", &sn_msg);
+                                            info!("pub msg successfully: {}", &pub_msg);
                                             continue;
                                             },
                                         Err(err) => error!("pub msg failed: {:#?}", err),
@@ -442,6 +541,7 @@ fn main() {
     });
 
     let offine_data_pub_topic = pub_topic.clone();
+    let offline_data_pub_template = template.clone();
     //离线数据处理
     thread::spawn(move || {
         let mut offine_data_pub_stream_option: Option<TcpStream> = None;
@@ -468,7 +568,7 @@ fn main() {
             let db_req = DbReq{
                 operation: DbOp::QUERY,
                 id: 0,
-                data: DeviceData::new(0, 0, "", 0.0, 0.0, 0.0, 0, 0),
+                data: DeviceData::new(0, "", 0, "", 0.0, 0.0, 0.0, 0, 0),
             };
             match query_req.send(db_req) {
                 Ok(_ok) => {
@@ -483,14 +583,21 @@ fn main() {
                                     },
                                 };
                                 let sn_msg = get_msg_from_data(&device_data);
+                                let pub_msg = match format_msg(&sn_msg, &offline_data_pub_template) {
+                                    Ok(pub_msg) => pub_msg,
+                                    Err(err) => {
+                                        error!("convert from data template failed: {:#?}", err);
+                                        continue;
+                                    },
+                                };
                                 match offine_data_pub_stream_option {
                                             Some(ref mut stream) => {
-                                                if let Ok(_) = pub_sn_msg_use_stream(&offine_data_pub_topic, &sn_msg, stream) {
+                                                if let Ok(_) = pub_sn_msg_use_stream(&offine_data_pub_topic, &pub_msg, stream) {
                                                     //数据上传成功，删除数据库中对应的记录
                                                     let db_delete_req = DbReq{
                                                         operation: DbOp::DELETE,
                                                         id: id,
-                                                        data: DeviceData::new(0, 0, "", 0.0, 0.0, 0.0, 0, 0),
+                                                        data: DeviceData::new(0, "", 0, "", 0.0, 0.0, 0.0, 0, 0),
                                                     };
                                                     match db_delete_req_tx.send(db_delete_req) {
                                                         Ok(_ok) => {
@@ -554,11 +661,12 @@ fn main() {
                         let id: u32 = row.get(0)?;
                         let data = DeviceData {
                             device_serial_number: row.get(1)?,
-                            timestamp_msec: row.get(2)?,
-                            time_string: row.get(3)?,
-                            temperature: row.get(4)?,
-                            humidity: row.get(5)?,
-                            voltage: row.get(6)?,
+                            name: row.get(2)?,
+                            timestamp_msec: row.get(3)?,
+                            time_string: row.get(4)?,
+                            temperature: row.get(5)?,
+                            humidity: row.get(6)?,
+                            voltage: row.get(7)?,
                             rssi: 0,
                             error_code: 0,
                         };

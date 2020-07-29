@@ -1,0 +1,17 @@
+[server]
+address = "127.0.0.1:1883"
+
+[client]
+id = "pepper_gw"
+
+[topic]
+sub_topic = "ctrl/#"
+pub_topic = "v1/gateway/telemetry"
+
+[msg]
+example = "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\"voltage\": 3.88,\"status\": 0}"
+template = "{<{name}>: [{\"ts\": <#TS#>,\"values\": {\"temperature\": <{temperature}>, \"humidity\": <{humidity}>,\"voltage\": <{voltage}>,\"status\": <{status}>}}]}"
+
+[database]
+path = "./"
+name = "iot.db"

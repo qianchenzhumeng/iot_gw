@@ -21,3 +21,4 @@ chrono = "0.4.13"
 toml = "0.5.6"
 serde_derive = "1.0"
 serde = "1.0"
+data_template = {path = "./data_template"}
