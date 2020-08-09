@@ -1,0 +1,6 @@
+[submodule "termios-rs"]
+	path = termios-rs
+	url = https://github.com/qianchenzhumeng/termios-rs
+[submodule "serial-rs"]
+	path = serial-rs
+	url = https://github.com/qianchenzhumeng/serial-rs
