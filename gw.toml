@@ -15,3 +15,9 @@ template = "{<{name}>: [{\"ts\": <#TS#>,\"values\": {\"temperature\": <{temperat
 [database]
 path = "./"
 name = "iot.db"
+
+[data_if]
+#if_name = "/dev/ttyS14"
+#if_type = "serial_port"
+if_name = "./data_if.txt"
+if_type = "text_file"

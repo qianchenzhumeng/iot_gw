@@ -1,5 +1,4 @@
 extern crate data_management;
-extern crate sensor_interface;
 extern crate mqtt;
 extern crate clap;
 extern crate time;
@@ -11,14 +10,17 @@ extern crate rusqlite;
 extern crate toml;
 extern crate serde_derive;
 extern crate data_template;
+extern crate serial;
+#[cfg(feature = "data_interface_text_file")]
+extern crate sensor_interface;
 #[macro_use]
 extern crate log;
 
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use data_management::data_management::{data_base, DeviceData};
-use sensor_interface::file_if;
+
 use std::{env, fs, thread, str};
-use std::io::Write;
+use std::io::prelude::*;
 use std::net::TcpStream;
 use clap::{App, Arg};
 use mqtt::control::variable_header::ConnectReturnCode;
@@ -28,6 +30,11 @@ use chrono::prelude::Local;
 use std::sync::mpsc;
 use serde_derive::Deserialize;
 use data_template::{Template, Model, Value};
+use serial::prelude::*;
+
+#[cfg(feature = "data_interface_text_file")]
+use sensor_interface::FileIf;
+use std::fs::File;
 
 #[derive(Debug)]
 enum SnMsgHandleError{
@@ -38,6 +45,13 @@ enum SnMsgHandleError{
     SnMsgPacketError,
     SnMsgTopicNameError,
     //SnMsgConvertError,
+}
+
+#[derive(Debug)]
+enum DataIfError{
+    DataIfOpenError,
+    DataIfInitError,
+    DataIfUnknownType,
 }
 
 enum DbOp {
@@ -63,39 +77,46 @@ struct NetworkNotify {
 
 #[derive(Deserialize)]
 struct Config {
-    server: Server,
-    client: Client,
-    topic: Topic,
-    msg: Msg,
-    database: Database,
+    server: ServerConfig,
+    client: ClientConfig,
+    topic: TopicConfig,
+    msg: MsgConfig,
+    database: DatabaseConfig,
+    data_if: DataIfConfig,
 }
 
 #[derive(Deserialize)]
-struct Server {
+struct ServerConfig {
     address: String,
 }
 
 #[derive(Deserialize)]
-struct Client {
+struct ClientConfig {
     id: String,
 }
 
 #[derive(Deserialize)]
-struct Topic {
+struct TopicConfig {
     sub_topic: String,
     pub_topic: String,
 }
 
 #[derive(Deserialize)]
-struct Msg {
+struct MsgConfig {
     example: String,
     template: String,
 }
 
 #[derive(Deserialize)]
-struct Database {
+struct DatabaseConfig {
     path: String,
     name: String,
+}
+
+#[derive(Deserialize)]
+struct DataIfConfig {
+    if_name: String,
+    if_type: String,
 }
 
 fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
@@ -125,72 +146,7 @@ fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
 
     Ok(db)
 }
-/*
-fn pub_sn_msg(sn: &str, topic: &str, msg: &str, server: &str) -> Result<(), SnMsgHandleError>
-{
-    // 连接服务器
-    //info!("Connecting to {:?} ... ", server);
-    let mut stream = match TcpStream::connect(server){
-        Ok(stream) => stream,
-        Err(_err) => return Err(SnMsgHandleError::SnMsgConnError),
-    };
-    //info!("Connected!");
 
-    //info!("Client identifier {:?}", sn);
-    let mut conn = ConnectPacket::new("MQTT", sn);
-    conn.set_clean_session(true);
-    let mut buf = Vec::new();
-    match conn.encode(&mut buf) {
-        Ok(_) => {},
-        Err(_err) => return Err(SnMsgHandleError::SnMsgPacketError),
-    };
-    match stream.write_all(&buf[..]) {
-        Ok(_) => {},
-        Err(_err) => return Err(SnMsgHandleError::SnMsgConnError),
-    };
-
-    let connack = match ConnackPacket::decode(&mut stream) {
-        Ok(connack) => connack,
-        Err(_) => return Err(SnMsgHandleError::SnMsgPacketError),
-    };
-    //trace!("CONNACK {:?}", connack);
-
-    if connack.connect_return_code() != ConnectReturnCode::ConnectionAccepted {
-        //info!(
-        //    "Failed to connect to server, return code {:?}",
-        //    connack.connect_return_code()
-        //);
-        //return Err(SnMsgHandleError::SnMsgConnAckError);
-    }
-    // 发布消息
-    let topic_name = match TopicName::new(topic) {
-        Ok(topic_name) => topic_name,
-        Err(_)  => return Err(SnMsgHandleError::SnMsgTopicNameError),
-    };
-    let publish_packet = PublishPacket::new(topic_name, QoSWithPacketIdentifier::Level0, msg.clone());
-    let mut buf = Vec::new();
-    match publish_packet.encode(&mut buf) {
-        Ok(_) => {},
-        Err(_) => return Err(SnMsgHandleError::SnMsgPacketError),
-    };
-    match stream.write_all(&buf[..]) {
-        Ok(_) => {},
-        Err(_err) => return Err(SnMsgHandleError::SnMsgPubError),
-    };
-    // 断开连接
-    let disconn_pakdet = DisconnectPacket::new();
-    let mut buf = Vec::new();
-    match disconn_pakdet.encode(&mut buf) {
-        Ok(_) => {},
-        Err(_err) => return Err(SnMsgHandleError::SnMsgPacketError),
-    };
-    match stream.write_all(&buf[..]) {
-        Ok(_) => {},
-        Err(_err) => return Err(SnMsgHandleError::SnMsgDisconnError),
-    };
-    Ok(())
-}
-*/
 fn pub_sn_msg_use_stream(topic: &str, msg: &str, stream: &mut TcpStream) -> Result<(), SnMsgHandleError>
 {
     // 发布消息
@@ -407,6 +363,49 @@ fn format_msg(original: &str, template_str: &str) -> Result<String, ()> {
     Ok(msg)
 }
 
+#[cfg(feature = "data_interface_serial_port")]
+fn init_data_interface(if_name: &str, if_type: &str) -> Result<serial::SystemPort, DataIfError> {
+    if if_type.eq("serial_port") {
+        const SETTINGS: serial::PortSettings = serial::PortSettings {
+            baud_rate:    serial::Baud115200,
+            char_size:    serial::Bits8,
+            parity:       serial::ParityNone,
+            stop_bits:    serial::Stop1,
+            flow_control: serial::FlowNone,
+        };
+        let mut port = match serial::open(&if_name) {
+            Ok(port) => port,
+            Err(err) => {
+                error!("Open {} failed: {}", if_name, err);
+                return Err(DataIfError::DataIfOpenError);
+            },
+        };
+        if let Err(err) = port.configure(&SETTINGS) {
+            error!("serial port config failed: {}", err);
+            return Err(DataIfError::DataIfInitError);
+        };
+        if let Err(err) = port.set_timeout(Duration::from_secs(5)) {
+            error!("serial port config failed: {}", err);
+            return Err(DataIfError::DataIfInitError);
+        };
+        return Ok(port);
+    } else {
+        return Err(DataIfError::DataIfUnknownType);
+    }
+}
+
+#[cfg(feature = "data_interface_text_file")]
+fn init_data_interface(if_name: &str, if_type: &str) -> Result<FileIf, DataIfError> {
+    if if_type.eq("text_file") {
+        match File::open(if_name) {
+            Ok(_file) => return Ok(FileIf),
+            Err(_err) => return Err(DataIfError::DataIfOpenError),
+        }
+    } else {
+        return Err(DataIfError::DataIfUnknownType);
+    }
+}
+
 fn main() {
     env::set_var("RUST_LOG", env::var_os("RUST_LOG").unwrap_or_else(|| "info".into()));
     env_logger::init();
@@ -433,6 +432,8 @@ fn main() {
     let database_name = config.database.name;
     let template = config.msg.template;
     let msg_example = config.msg.example;
+    let data_if_name = config.data_if.if_name;
+    let data_if_type = config.data_if.if_type;
     let mut try_to_connect = true;
 
     // 数据模板校验
@@ -443,6 +444,15 @@ fn main() {
     if let Err(_) = json::parse(&check) {
         panic!("please check msg.example and msg.template config-file: {}", config_file);
     }
+
+    let mut data_if = match init_data_interface(&data_if_name, &data_if_type) {
+        Ok(data_if) => {
+            data_if
+        },
+        Err(err) => {
+            panic!("Init data interface failed: {:#?}", err)
+        },
+    };
 
     let db = match init_data_base(&database_path, &database_name) {
         Ok(database) => database,
@@ -461,82 +471,143 @@ fn main() {
 
     let original_data_pub_topic = pub_topic.clone();
     let original_data_pub_template = template.clone();
-    // 从文件中获取传感器数据，如果和上次的不相同则处理
+    let (original_data_tx, original_data_rx) = mpsc::channel();
+
+    // 获取原始数据
+    #[cfg(feature = "data_interface_serial_port")]
     thread::spawn(move || {
-        let mut last_msg = String::from("");
-        let mut original_data_pub_strem_option: Option<TcpStream> = None;
-        let mut network_ok = false;
+        let mut buf: Vec<u8> = vec![0];
         loop {
-            match file_if::read_msg("./msg_data.txt") {
-                Ok(sn_msg) => {
-                    if last_msg.ne(&sn_msg) && !sn_msg.is_empty() {
-                        match original_data_pub_strem_rx.try_recv() {
-                            Ok(notification) => {
-                                let notification: NetworkNotify = notification;
-                                match notification.event {
-                                    NetworkChange::ESTABILISH => {
-                                        match notification.stream {
-                                            Some(stream) => {
-                                                network_ok = true;
-                                                original_data_pub_strem_option = Some(stream);
-                                            },
-                                            _ => {},
-                                        };
-                                    },
-                                    NetworkChange::LOSE => {
-                                        network_ok = false;
-                                    },
-                                }
-                            },
-                            Err(_err) => {},
-                        }
-                        if network_ok {
-                            match original_data_pub_strem_option {
-                                Some(ref mut stream) => {
-                                    let pub_msg = match format_msg(&sn_msg, &original_data_pub_template) {
-                                        Ok(pub_msg) => pub_msg,
-                                        Err(err) => {
-                                            error!("convert from data template failed: {:#?}", err);
-                                            continue;
-                                        },
-                                    };
-                                    let r = pub_sn_msg_use_stream(&original_data_pub_topic, &pub_msg, stream);
-                                    match r {
-                                        Ok(_ok) => {
-                                            info!("pub msg successfully: {}", &pub_msg);
-                                            continue;
-                                            },
-                                        Err(err) => error!("pub msg failed: {:#?}", err),
-                                    }
-                                },
-                                None => {},
-                            }
-                        }
-                        let device_data = match get_data_from_msg(&sn_msg) {
-                            Ok(data) => data,
-                            Err(_err) => {
-                                error!("parse {} failed", &sn_msg);
-                                continue;
-                            },
-                        };
-                        let db_req = DbReq{
-                            operation: DbOp::INSERT,
-                            id: 0,
-                            data: device_data,
-                        };
-                        match insert_req.send(db_req) {
-                            Err(err) => {
-                                error!("send insert req failed: {}", err);
-                                continue;
-                            },
+            match data_if.read(&mut buf[..]) {
+                Ok(_n) => {
+                        match original_data_tx.send(buf[0]) {
                             _ => {},
                         }
-                        last_msg = sn_msg.clone();
+                },
+                Err(_err) => continue,
+            }
+        }
+    });
+
+    #[cfg(feature = "data_interface_text_file")]
+    thread::spawn(move || {
+        loop {
+            match data_if.read(&data_if_name) {
+                Ok(sn_msg) => {
+                    if !sn_msg.is_empty() {
+                        for c in sn_msg.bytes() {
+                            match original_data_tx.send(c) {
+                                _ => {},
+                            }
+                        }
+                    }
+                },
+                Err(_err) => continue,
+            }
+            thread::sleep(Duration::from_secs(1));
+        }
+    });
+
+    thread::spawn(move || {
+        let mut original_data_pub_strem_option: Option<TcpStream> = None;
+        let mut network_ok = false;
+        let mut sn_msg_buf: Option<Vec<u8>> = Some(vec![13]);
+        let mut received = false;
+        let mut published = false;
+        loop {
+            match original_data_rx.recv() {
+                Ok(c) => {
+                    let ch = char::from(c);
+                    if ch != '\r' && ch != '\n' {   /* not '\r' and '\n' */
+                        match sn_msg_buf {
+                            Some(ref mut v) => v.push(c),
+                            None => {},
+                        }
+                    } else if ch == '\n' {
+                        received = true;
+                    }
+                    if received {
+                        match sn_msg_buf {
+                            Some(ref mut v) => {
+                                match std::str::from_utf8(&v) {
+                                    Ok(sn_msg) => {
+                                        match original_data_pub_strem_rx.try_recv() {
+                                            Ok(notification) => {
+                                                let notification: NetworkNotify = notification;
+                                                match notification.event {
+                                                    NetworkChange::ESTABILISH => {
+                                                        match notification.stream {
+                                                            Some(stream) => {
+                                                                network_ok = true;
+                                                                original_data_pub_strem_option = Some(stream);
+                                                            },
+                                                            _ => {},
+                                                        };
+                                                    },
+                                                    NetworkChange::LOSE => {
+                                                        network_ok = false;
+                                                        published = false;
+                                                    },
+                                                }
+                                            },
+                                            Err(_err) => {},
+                                        }
+                                        if network_ok {
+                                                match original_data_pub_strem_option {
+                                                    Some(ref mut stream) => {
+                                                        match format_msg(&sn_msg, &original_data_pub_template) {
+                                                            Ok(pub_msg) => {
+                                                                let r = pub_sn_msg_use_stream(&original_data_pub_topic, &pub_msg, stream);
+                                                                match r {
+                                                                    Ok(_ok) => {
+                                                                            published = true;
+                                                                            info!("pub msg successfully: {}", &pub_msg);
+                                                                        },
+                                                                    Err(err) => error!("pub msg failed: {:#?}", err),
+                                                                }
+                                                            },
+                                                            Err(err) => {
+                                                                error!("convert from data template failed: {:#?}", err);
+                                                            },
+                                                        };
+                                                        
+                                                    },
+                                                    None => {},
+                                                }
+                                        }
+                                        if !published {
+                                                match get_data_from_msg(&sn_msg) {
+                                                    Ok(device_data) => {
+                                                        let db_req = DbReq{
+                                                            operation: DbOp::INSERT,
+                                                            id: 0,
+                                                            data: device_data,
+                                                        };
+                                                        match insert_req.send(db_req) {
+                                                            Err(err) => {
+                                                                error!("send insert req failed: {}", err);
+                                                            },
+                                                            _ => {},
+                                                        }
+                                                    },
+                                                    Err(_err) => {
+                                                        error!("get data from {} failed", &sn_msg);
+                                                    },
+                                                };
+                                        }
+                                    },
+                                    Err(_err) => println!("get sn msg failed!"),
+                                }
+                                v.clear();
+                            },
+                            None => {},
+                        }
+                        received = false;
+                        
                     }
                 },
                 Err(_err) => {},
-            };
-            thread::sleep(Duration::from_secs(1));
+            }
         }
     });
 
@@ -823,7 +894,7 @@ fn main() {
             stream: None,
             event: NetworkChange::LOSE,
         };
-        match offine_data_pub_stream_tx .send(msg) {
+        match offine_data_pub_stream_tx.send(msg) {
             Ok(_ok) => {},
             Err(err) => error!("send NetworkNotify failed: {}", err),
         }

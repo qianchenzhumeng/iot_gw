@@ -1,5 +1,12 @@
-pub mod file_if{
-    pub fn read_msg(filename: &str) -> Result<String, ()> {
+use std::fs::File;
+use std::io::BufReader;
+use std::io::prelude::*;
+
+#[derive(Debug,Copy,Clone)]
+pub struct FileIf;
+
+impl FileIf {
+    pub fn read(self, filename: &str) -> Result<String, ()> {
         match std::fs::read_to_string(filename) {
             Ok(msg) => {
                 match std::fs::write(filename, "") {

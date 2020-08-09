@@ -10,7 +10,6 @@ edition = "2018"
 data_management = { path = "./data_management" }
 sensor_interface = { path = "./sensor_interface" }
 mqtt-protocol = "0.8.1"
-rusqlite = "0.23.1"
 log = "0.4"
 clap = "2"
 env_logger = "0.7"
@@ -22,3 +21,13 @@ toml = "0.5.6"
 serde_derive = "1.0"
 serde = "1.0"
 data_template = {path = "./data_template"}
+serial = {version = "=0.4.0", path = "./serial-rs/serial"}
+[dependencies.rusqlite]
+version = "0.23.1"
+features = ["bundled"]
+
+[features]
+#default = ["data_interface_serial_port"]
+default = ["data_interface_text_file"]
+data_interface_serial_port = []
+data_interface_text_file = []
