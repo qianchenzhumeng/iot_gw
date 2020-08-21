@@ -4,3 +4,6 @@
 [submodule "serial-rs"]
 	path = serial-rs
 	url = https://github.com/qianchenzhumeng/serial-rs
+[submodule "ioctl-rs"]
+	path = ioctl-rs
+	url = https://github.com/qianchenzhumeng/ioctl-rs
