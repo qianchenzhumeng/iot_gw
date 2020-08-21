@@ -105,10 +105,66 @@ if_type = "serial_port"
 cargo run -- -c gw.toml
 ```
 
-使用外部设备按如下格式向串口发送数据（末端需要有换行符 `'\n'`）：
+使用外部设备按 HDTP 的帧格式（见 HDTP [README](/hdtp/README.md)）向串口发送数据（波特率 115200）：
 
 ```
 {"id":1,"name":"SN-001","temperature": 27.45,"humidity": 25.36,"voltage": 3.88,"status": 0}
+```
+
+Arduino 示例程序：
+
+```
+void setup() {
+  Serial.begin(115200);
+}
+
+uint16_t calcByte(uint16_t crc, uint8_t b)
+{
+    uint32_t i;
+    crc = crc ^ (uint32_t)b << 8;
+  
+    for ( i = 0; i < 8; i++)
+    {
+      if ((crc & 0x8000) == 0x8000)
+        crc = crc << 1 ^ 0x1021;
+      else
+        crc = crc << 1;
+    }
+    return crc & 0xffff;
+}
+
+uint16_t CRC16(uint8_t *pBuffer, uint32_t length)
+{
+    uint16_t wCRC16 = 0;
+    uint32_t i;
+    if (( pBuffer == 0 ) || ( length == 0 ))
+    {
+        return 0;
+    }
+    for ( i = 0; i < length; i++)
+    {
+        wCRC16 = calcByte(wCRC16, pBuffer[i]);
+    }
+    return wCRC16;
+}
+
+uint8_t buf[128];
+void loop() {
+	uint8_t n,i;
+	uint16_t crc;
+	n = sprintf(buf, "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\"voltage\": 3.88,\"status\": 0}");
+	crc = CRC16(buf, n);
+
+	Serial.write(0x7E);
+	Serial.write(n);
+	for( i = 0; i < n; i++)
+	{
+		Serial.write(buf[i]);
+	}
+	Serial.write((uint8_t)(crc >> 8));
+	Serial.write((uint8_t)crc);
+	delay(2000);
+}
 ```
 
 ### 3. 数据模板引擎功能说明
@@ -154,12 +210,23 @@ cargo run -- -c gw.toml
 ### 4. 已支持的平台
 
 - x86_64-unknown-linux-gnu
-  - 需要将子目录 `termios-rs` 切换到 `master` 分支
+  
+  - 需要将子目录 `termios-rs`、`serial-rs`、`ioctl-rs` 切换到 `master` 分支
+  
 - mips-unknown-linux-uclibc
-  - 需要为该目标平台编译 rust
-  - 需要将子目录 `termios-rs` 切换到 `openwrt_cc` 分支
-  - 编译命令: `cargo build --target=mips-unknown-linux-uclibc --release`
+  - 需要为该目标平台编译 rust：[Cross Compile Rust For OpenWRT](https://qianchenzhumeng.github.io/rust/2020/08/09/cross-compile-rust-for-openwrt.html)
+  - 需要将子目录 `termios-rs`、`serial-rs`、`ioctl-rs` 切换到 `openwrt_cc` 分支
+  - 编译命令: 
+  
+  ```
+  #编译 libsqlite3-sys 需要指定交叉编译工具链
+  export CC_mips_unknown_linux_uclibc=mips-openwrt-linux-uclibc-gcc
+  cargo build --target=mips-unknown-linux-uclibc --release
+  ```
+
+默认启用了 rusqlite 的 bundled 特性，libsqlite3-sys 会使用 cc crate 编译 sqlite3，交叉编译时要在环境变量中指定 cc crate使用的编译器(cc crate 的文档中有说明)，否则会调用系统默认的 cc，导致编译过程中出现文件格式无法识别的情况。
 
 ### 5. 已知问题
 
-离线数据缓存功能与原始输入数据格式强相关，随意修改原始输入数据会导致该功能不可用，但不会影响在线时的数据发送。
+1. 离线数据缓存功能与原始输入数据格式强相关，随意修改原始输入数据会导致该功能不可用，但不会影响在线时的数据发送。
+2. 如果使用了数据模板引擎打时间戳的功能（<#TS#>），发布离线时缓存的数据时，输出数据中的时间戳会是发布数据时的时间戳。

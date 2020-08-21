@@ -10,7 +10,10 @@ extern crate rusqlite;
 extern crate toml;
 extern crate serde_derive;
 extern crate data_template;
+#[cfg(feature = "data_interface_serial_port")]
 extern crate serial;
+#[cfg(feature = "data_interface_serial_port")]
+extern crate hdtp;
 #[cfg(feature = "data_interface_text_file")]
 extern crate sensor_interface;
 #[macro_use]
@@ -30,10 +33,14 @@ use chrono::prelude::Local;
 use std::sync::mpsc;
 use serde_derive::Deserialize;
 use data_template::{Template, Model, Value};
+#[cfg(feature = "data_interface_serial_port")]
 use serial::prelude::*;
+#[cfg(feature = "data_interface_serial_port")]
+use hdtp::Hdtp;
 
 #[cfg(feature = "data_interface_text_file")]
 use sensor_interface::FileIf;
+#[cfg(feature = "data_interface_text_file")]
 use std::fs::File;
 
 #[derive(Debug)]
@@ -476,13 +483,21 @@ fn main() {
     // 获取原始数据
     #[cfg(feature = "data_interface_serial_port")]
     thread::spawn(move || {
+        let mut hdtp = Hdtp::new();
         let mut buf: Vec<u8> = vec![0];
         loop {
             match data_if.read(&mut buf[..]) {
                 Ok(_n) => {
-                        match original_data_tx.send(buf[0]) {
-                            _ => {},
-                        }
+                    //println!("{}", hdtp);
+                    hdtp.input(buf[0]);
+                    match hdtp.get_msg() {
+                        Ok(msg) => {
+                            match original_data_tx.send(msg) {
+                                _ => {},
+                            }
+                        },
+                        Err(_) => {},
+                    }
                 },
                 Err(_err) => continue,
             }
@@ -495,10 +510,8 @@ fn main() {
             match data_if.read(&data_if_name) {
                 Ok(sn_msg) => {
                     if !sn_msg.is_empty() {
-                        for c in sn_msg.bytes() {
-                            match original_data_tx.send(c) {
-                                _ => {},
-                            }
+                        match original_data_tx.send(sn_msg) {
+                            _ => {},
                         }
                     }
                 },
@@ -511,99 +524,73 @@ fn main() {
     thread::spawn(move || {
         let mut original_data_pub_strem_option: Option<TcpStream> = None;
         let mut network_ok = false;
-        let mut sn_msg_buf: Option<Vec<u8>> = Some(vec![13]);
-        let mut received = false;
         let mut published = false;
         loop {
             match original_data_rx.recv() {
-                Ok(c) => {
-                    let ch = char::from(c);
-                    if ch != '\r' && ch != '\n' {   /* not '\r' and '\n' */
-                        match sn_msg_buf {
-                            Some(ref mut v) => v.push(c),
-                            None => {},
-                        }
-                    } else if ch == '\n' {
-                        received = true;
+                Ok(sn_msg) => {
+                    match original_data_pub_strem_rx.try_recv() {
+                        Ok(notification) => {
+                            let notification: NetworkNotify = notification;
+                            match notification.event {
+                                NetworkChange::ESTABILISH => {
+                                    match notification.stream {
+                                        Some(stream) => {
+                                            network_ok = true;
+                                            original_data_pub_strem_option = Some(stream);
+                                        },
+                                        _ => {},
+                                    };
+                                },
+                                NetworkChange::LOSE => {
+                                    network_ok = false;
+                                    published = false;
+                                },
+                            }
+                        },
+                        Err(_err) => {},
                     }
-                    if received {
-                        match sn_msg_buf {
-                            Some(ref mut v) => {
-                                match std::str::from_utf8(&v) {
-                                    Ok(sn_msg) => {
-                                        match original_data_pub_strem_rx.try_recv() {
-                                            Ok(notification) => {
-                                                let notification: NetworkNotify = notification;
-                                                match notification.event {
-                                                    NetworkChange::ESTABILISH => {
-                                                        match notification.stream {
-                                                            Some(stream) => {
-                                                                network_ok = true;
-                                                                original_data_pub_strem_option = Some(stream);
-                                                            },
-                                                            _ => {},
-                                                        };
+                    if network_ok {
+                            match original_data_pub_strem_option {
+                                Some(ref mut stream) => {
+                                    match format_msg(&sn_msg, &original_data_pub_template) {
+                                        Ok(pub_msg) => {
+                                            let r = pub_sn_msg_use_stream(&original_data_pub_topic, &pub_msg, stream);
+                                            match r {
+                                                Ok(_ok) => {
+                                                        published = true;
+                                                        info!("pub msg successfully: {}", &pub_msg);
                                                     },
-                                                    NetworkChange::LOSE => {
-                                                        network_ok = false;
-                                                        published = false;
-                                                    },
-                                                }
-                                            },
-                                            Err(_err) => {},
-                                        }
-                                        if network_ok {
-                                                match original_data_pub_strem_option {
-                                                    Some(ref mut stream) => {
-                                                        match format_msg(&sn_msg, &original_data_pub_template) {
-                                                            Ok(pub_msg) => {
-                                                                let r = pub_sn_msg_use_stream(&original_data_pub_topic, &pub_msg, stream);
-                                                                match r {
-                                                                    Ok(_ok) => {
-                                                                            published = true;
-                                                                            info!("pub msg successfully: {}", &pub_msg);
-                                                                        },
-                                                                    Err(err) => error!("pub msg failed: {:#?}", err),
-                                                                }
-                                                            },
-                                                            Err(err) => {
-                                                                error!("convert from data template failed: {:#?}", err);
-                                                            },
-                                                        };
-                                                        
-                                                    },
-                                                    None => {},
-                                                }
-                                        }
-                                        if !published {
-                                                match get_data_from_msg(&sn_msg) {
-                                                    Ok(device_data) => {
-                                                        let db_req = DbReq{
-                                                            operation: DbOp::INSERT,
-                                                            id: 0,
-                                                            data: device_data,
-                                                        };
-                                                        match insert_req.send(db_req) {
-                                                            Err(err) => {
-                                                                error!("send insert req failed: {}", err);
-                                                            },
-                                                            _ => {},
-                                                        }
-                                                    },
-                                                    Err(_err) => {
-                                                        error!("get data from {} failed", &sn_msg);
-                                                    },
-                                                };
-                                        }
-                                    },
-                                    Err(_err) => println!("get sn msg failed!"),
-                                }
-                                v.clear();
-                            },
-                            None => {},
-                        }
-                        received = false;
-                        
+                                                Err(err) => error!("pub msg failed: {:#?}", err),
+                                            }
+                                        },
+                                        Err(err) => {
+                                            error!("convert from data template failed: {:#?}", err);
+                                        },
+                                    };
+                                    
+                                },
+                                None => {},
+                            }
+                    }
+                    if !published {
+                            match get_data_from_msg(&sn_msg) {
+                                Ok(device_data) => {
+                                    let db_req = DbReq{
+                                        operation: DbOp::INSERT,
+                                        id: 0,
+                                        data: device_data,
+                                    };
+                                    match insert_req.send(db_req) {
+                                        Err(err) => {
+                                            error!("send insert req failed: {}", err);
+                                        },
+                                        _ => {},
+                                    }
+                                },
+                                Err(_err) => {
+                                    error!("get data from {} failed", &sn_msg);
+                                },
+                            };
                     }
                 },
                 Err(_err) => {},
