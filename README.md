@@ -214,7 +214,7 @@ void loop() {
   - 需要将子目录 `termios-rs`、`serial-rs`、`ioctl-rs` 切换到 `master` 分支
   
 - mips-unknown-linux-uclibc
-  - 需要为该目标平台编译 rust：[Cross Compile Rust For OpenWRT](https://qianchenzhumeng.github.io/rust/2020/08/09/cross-compile-rust-for-openwrt.html)
+  - 需要为该目标平台编译 rust：[Cross Compile Rust For OpenWRT](https://qianchenzhumeng.github.io/posts/cross-compile-rust-for-openwrt/)
   - 需要将子目录 `termios-rs`、`serial-rs`、`ioctl-rs` 切换到 `openwrt_cc` 分支
   - 编译命令: 
   
