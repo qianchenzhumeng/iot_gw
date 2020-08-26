@@ -19,7 +19,7 @@ extern crate sensor_interface;
 #[macro_use]
 extern crate log;
 
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::time::Duration;
 use data_management::data_management::{data_base, DeviceData};
 
 use std::{env, fs, thread, str};
@@ -45,13 +45,9 @@ use std::fs::File;
 
 #[derive(Debug)]
 enum SnMsgHandleError{
-    SnMsgParseError,
-    //SnMsgConnError,
     SnMsgPubError,
-    //SnMsgDisconnError,
     SnMsgPacketError,
     SnMsgTopicNameError,
-    //SnMsgConvertError,
 }
 
 #[derive(Debug)]
@@ -66,6 +62,7 @@ enum DbOp {
     QUERY,
     DELETE,
 }
+
 struct DbReq {
     operation: DbOp,
     id: u32,
@@ -136,19 +133,9 @@ fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
         },
     };
 
-    match data_base::create_device_table(&db) {
-        Ok(_ok) => info!("create DEVICE table successfully"),
-        Err(err) => error!("create DEVICE table failed: {:?}", err),
-    }
-
     match data_base::create_device_data_table(&db) {
         Ok(_ok) => info!("create DEVICE_DATA table successfully"),
         Err(err) => error!("create DEVICE_DATA table failed: {:?}", err),
-    }
-
-    match data_base::create_device_error_table(&db) {
-        Ok(_ok) => info!("create DEVICE_ERROR table successfully"),
-        Err(err) => error!("create DEVICE_ERROR table failed: {:?}", err),
     }
 
     Ok(db)
@@ -174,67 +161,8 @@ fn pub_sn_msg_use_stream(topic: &str, msg: &str, stream: &mut TcpStream) -> Resu
     Ok(())
 }
 
-fn get_data_from_msg(msg: &str) -> Result<DeviceData, SnMsgHandleError> {
-    let parsed = match json::parse(&msg) {
-        Ok(parsed) => parsed,
-        Err(_err) => {
-            return Err(SnMsgHandleError::SnMsgParseError);
-        },
-    };
-    let n = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(n) => n,
-        Err(_) => Duration::from_secs(0),
-    };
-    let timestamp_msec = n.as_millis() as i64;
-    let time_string = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let id = match parsed["id"].as_u32() {
-        Some(id) => id,
-        None => return Err(SnMsgHandleError::SnMsgParseError),
-    };
-    let name = match parsed["name"].as_str() {
-        Some(name) => name.to_string(),
-        None => return Err(SnMsgHandleError::SnMsgParseError),
-    };
-    let temperature = match parsed["temperature"].as_f64() {
-        Some(t) => t,
-        None => return Err(SnMsgHandleError::SnMsgParseError),
-    };
-    let humidity = match parsed["humidity"].as_f64() {
-        Some(h) => h,
-        None => return Err(SnMsgHandleError::SnMsgParseError),
-    };
-    let voltage = match parsed["voltage"].as_f64() {
-        Some(v) => v,
-        None => return Err(SnMsgHandleError::SnMsgParseError),
-    };
-    let status = match parsed["status"].as_i32() {
-        Some(s) => s,
-        None => return Err(SnMsgHandleError::SnMsgParseError),
-    };
-    let data = DeviceData{
-        device_serial_number: id,
-        name: name,
-        timestamp_msec: timestamp_msec,
-        time_string: time_string,
-        temperature: temperature,
-        humidity: humidity,
-        voltage: voltage,
-        rssi: 0,
-        error_code: status,
-    };
-    Ok(data)
-}
-
 fn get_msg_from_data(data: &DeviceData) -> String {
-    let msg_json = json::object!{
-        id: data.device_serial_number,
-        name: data.name.clone(),
-        temperature: data.temperature,
-        humidity: data.humidity,
-        voltage: data.voltage,
-        status: data.error_code
-    };
-    msg_json.dump()
+    data.msg.clone()
 }
 
 fn connect_to_server(server: &str, client_id: &str, channel_filters: &Vec<(TopicFilter, QualityOfService)>) -> Result<TcpStream, ()> {
@@ -258,10 +186,6 @@ fn connect_to_server(server: &str, client_id: &str, channel_filters: &Vec<(Topic
     trace!("CONNACK {:?}", connack);
 
     if connack.connect_return_code() != ConnectReturnCode::ConnectionAccepted {
-        //panic!(
-        //    "Failed to connect to server, return code {:?}",
-        //    connack.connect_return_code()
-        //);
         return Err(());
     }
 
@@ -478,6 +402,7 @@ fn main() {
 
     let original_data_pub_topic = pub_topic.clone();
     let original_data_pub_template = template.clone();
+    let db_handle_template = template.clone();
     let (original_data_tx, original_data_rx) = mpsc::channel();
 
     // 获取原始数据
@@ -567,30 +492,22 @@ fn main() {
                                             error!("convert from data template failed: {:#?}", err);
                                         },
                                     };
-                                    
                                 },
                                 None => {},
                             }
                     }
                     if !published {
-                            match get_data_from_msg(&sn_msg) {
-                                Ok(device_data) => {
-                                    let db_req = DbReq{
-                                        operation: DbOp::INSERT,
-                                        id: 0,
-                                        data: device_data,
-                                    };
-                                    match insert_req.send(db_req) {
-                                        Err(err) => {
-                                            error!("send insert req failed: {}", err);
-                                        },
-                                        _ => {},
-                                    }
-                                },
-                                Err(_err) => {
-                                    error!("get data from {} failed", &sn_msg);
-                                },
-                            };
+                        let db_req = DbReq{
+                            operation: DbOp::INSERT,
+                            id: 0,
+                            data: DeviceData{ msg: sn_msg },
+                        };
+                        match insert_req.send(db_req) {
+                            Err(err) => {
+                                error!("send insert req failed: {}", err);
+                            },
+                            _ => {},
+                        }
                     }
                 },
                 Err(_err) => {},
@@ -599,7 +516,6 @@ fn main() {
     });
 
     let offine_data_pub_topic = pub_topic.clone();
-    let offline_data_pub_template = template.clone();
     //离线数据处理
     thread::spawn(move || {
         let mut offine_data_pub_stream_option: Option<TcpStream> = None;
@@ -626,7 +542,7 @@ fn main() {
             let db_req = DbReq{
                 operation: DbOp::QUERY,
                 id: 0,
-                data: DeviceData::new(0, "", 0, "", 0.0, 0.0, 0.0, 0, 0),
+                data: DeviceData::new(""),
             };
             match query_req.send(db_req) {
                 Ok(_ok) => {
@@ -641,21 +557,14 @@ fn main() {
                                     },
                                 };
                                 let sn_msg = get_msg_from_data(&device_data);
-                                let pub_msg = match format_msg(&sn_msg, &offline_data_pub_template) {
-                                    Ok(pub_msg) => pub_msg,
-                                    Err(err) => {
-                                        error!("convert from data template failed: {:#?}", err);
-                                        continue;
-                                    },
-                                };
                                 match offine_data_pub_stream_option {
                                             Some(ref mut stream) => {
-                                                if let Ok(_) = pub_sn_msg_use_stream(&offine_data_pub_topic, &pub_msg, stream) {
+                                                if let Ok(_) = pub_sn_msg_use_stream(&offine_data_pub_topic, &sn_msg, stream) {
                                                     //数据上传成功，删除数据库中对应的记录
                                                     let db_delete_req = DbReq{
                                                         operation: DbOp::DELETE,
                                                         id: id,
-                                                        data: DeviceData::new(0, "", 0, "", 0.0, 0.0, 0.0, 0, 0),
+                                                        data: DeviceData::new(""),
                                                     };
                                                     match db_delete_req_tx.send(db_delete_req) {
                                                         Ok(_ok) => {
@@ -698,7 +607,17 @@ fn main() {
             };
             match db_req.operation {
                 DbOp::INSERT => {
-                    match data_base::insert_data_to_device_data_table(&db, &db_req.data) {
+                    let sn_msg = get_msg_from_data(&db_req.data);
+                    let device_data = match format_msg(&sn_msg, &db_handle_template) {
+                        Ok(msg) => {
+                            DeviceData::new(&msg)
+                        },
+                        Err(err) => {
+                            error!("convert from data template failed: {:#?}", err);
+                            continue;
+                        },
+                    };
+                    match data_base::insert_data_to_device_data_table(&db, &device_data) {
                         Ok(_ok) => {
                             info!("buffed data successfully");
                         },
@@ -718,15 +637,7 @@ fn main() {
                     let data_iter = match stmt.query_map(rusqlite::params![], |row| {
                         let id: u32 = row.get(0)?;
                         let data = DeviceData {
-                            device_serial_number: row.get(1)?,
-                            name: row.get(2)?,
-                            timestamp_msec: row.get(3)?,
-                            time_string: row.get(4)?,
-                            temperature: row.get(5)?,
-                            humidity: row.get(6)?,
-                            voltage: row.get(7)?,
-                            rssi: 0,
-                            error_code: 0,
+                            msg: row.get(1)?,
                         };
                         Ok(
                             (id, data)
@@ -763,7 +674,6 @@ fn main() {
                     }
                 },
             }
-    
         }
     });
 
