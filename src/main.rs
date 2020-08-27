@@ -29,7 +29,6 @@ use clap::{App, Arg};
 use mqtt::control::variable_header::ConnectReturnCode;
 use mqtt::packet::*;
 use mqtt::{Decodable, Encodable, QualityOfService, TopicFilter, TopicName};
-use chrono::prelude::Local;
 use std::sync::mpsc;
 use serde_derive::Deserialize;
 use data_template::{Template, Model, Value};
@@ -53,6 +52,7 @@ enum SnMsgHandleError{
 #[derive(Debug)]
 enum DataIfError{
     DataIfOpenError,
+    #[cfg(feature = "data_interface_serial_port")]
     DataIfInitError,
     DataIfUnknownType,
 }
@@ -376,7 +376,17 @@ fn main() {
         panic!("please check msg.example and msg.template config-file: {}", config_file);
     }
 
+    #[cfg(feature = "data_interface_serial_port")]
     let mut data_if = match init_data_interface(&data_if_name, &data_if_type) {
+        Ok(data_if) => {
+            data_if
+        },
+        Err(err) => {
+            panic!("Init data interface failed: {:#?}", err)
+        },
+    };
+    #[cfg(feature = "data_interface_text_file")]
+    let data_if = match init_data_interface(&data_if_name, &data_if_type) {
         Ok(data_if) => {
             data_if
         },
