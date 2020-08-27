@@ -1,7 +1,3 @@
-use std::fs::File;
-use std::io::BufReader;
-use std::io::prelude::*;
-
 #[derive(Debug,Copy,Clone)]
 pub struct FileIf;
 
