@@ -19,7 +19,7 @@ pub enum Value {
 
 #[derive(Debug)]
 pub enum Error {
-    RegexError,
+    RegexError(regex::Error),
     ParseError,
     CallError,
 }
@@ -32,6 +32,12 @@ enum CallType {
 
 pub type Models = Vec<Model>;
 
+impl From<regex::Error> for Error {
+    fn from(error: regex::Error) -> Self {
+        Error::RegexError(error)
+    }
+}
+
 impl<'a> Template<'a> {
     pub fn new(template: &'a str) -> Self {
         Template {
@@ -40,19 +46,13 @@ impl<'a> Template<'a> {
     }
     // <{ label }>
     pub fn get_value_models(&self) -> Result<Models, Error> {
-        let re = match Regex::new(r"<\{\s*([^%>]+)\s*\}>") {
-            Ok(re) => re,
-            Err(_err) => return Err(crate::Error::RegexError),
-        };
+        let re = Regex::new(r"<\{\s*([^%>]+)\s*\}>")?;
         let models: Vec<Model> = re.captures_iter(self.template).map(|caps| Model::Value(caps[0].to_string())).collect();
         Ok(models)
     }
     // <# TS #>
     pub fn get_call_models(&self) -> Result<Models, Error> {
-        let re = match Regex::new(r"<#\s*([^%>]+)\s*#>") {
-            Ok(re) => re,
-            Err(_err) => return Err(crate::Error::RegexError),
-        };
+        let re = Regex::new(r"<#\s*([^%>]+)\s*#>")?;
         let models: Vec<Model> = re.captures_iter(self.template).map(|caps| Model::Value(caps[0].to_string())).collect();
         Ok(models)
     }
@@ -91,10 +91,7 @@ impl Model {
         if let false = self.is_label() {
             return Err(crate::Error::ParseError);
         }
-        let re = match Regex::new(r"[^<\{\}\s%>]+") {
-            Ok(re) => re,
-            Err(_err) => return Err(crate::Error::RegexError),
-        };
+        let re = Regex::new(r"[^<\{\}\s%>]+")?;
         let model = match self {
             Model::Value(model) => model,
         };
@@ -111,10 +108,7 @@ impl Model {
         if let false = self.is_call() {
             return Err(crate::Error::ParseError);
         }
-        let re = match Regex::new(r"[^<#\}\s#>]+") {
-            Ok(re) => re,
-            Err(_err) => return Err(crate::Error::RegexError),
-        };
+        let re = Regex::new(r"[^<#\}\s#>]+")?;
         let model = match self {
             Model::Value(model) => model,
         };
@@ -143,9 +137,7 @@ impl Model {
         if let false = self.is_call() {
             return Err(crate::Error::ParseError);
         }
-        if let Err(_) = Regex::new(r"<#\s*([^%>]+)\s*#>") {
-            return Err(crate::Error::ParseError);
-        };
+        Regex::new(r"<#\s*([^%>]+)\s*#>")?;
         match self.get_call_type() {
             Ok(call_type) => {
                 match call_type {
@@ -160,6 +152,120 @@ impl Model {
                 }
             },
             Err(err) => Err(err),
+        }
+    }
+}
+
+impl PartialEq for Model {
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            crate::Model::Value(self_value) => {
+                match other {
+                    crate::Model::Value(other_value) => {
+                        if self_value != other_value {
+                            return false;
+                        } else {
+                            return true;
+                        }
+                    },
+                    // _ => false,
+                }
+            },
+            // _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    fn models_eq(this: crate::Models, other: crate::Models) -> bool {
+        if this.len() == other.len() {
+            for i in 0..this.len() {
+                if this[i] != other[i] {
+                    println!("this: {:#?}, other: {:#?}", this, other);
+                    return false;
+                }
+            }
+            true
+        } else {
+            println!("this: {:#?}, other: {:#?}", this, other);
+            false
+        }
+    }
+
+    #[test]
+    fn template_get_value_models() {
+        let template = crate::Template::new("{<{name}>: [{\"ts\": <#TS#>,\"values\": <{value}>}]}");
+        match template.get_value_models() {
+            Ok(models) => {
+                let v: Vec<crate::Model> = vec![
+                    crate::Model::Value("<{name}>".to_string()),
+                    crate::Model::Value("<{value}>".to_string()),
+                ];
+                assert_eq!(models_eq(models, v), true);
+            },
+            Err(_) => panic!("Template::get_value_models test failed"),
+        }
+    }
+
+    #[test]
+    fn template_get_call_models() {
+        let template = crate::Template::new("{<{name}>: [{\"ts\": <#TS#>,\"values\": <{value}>}]}");
+        match template.get_call_models() {
+            Ok(models) => {
+                let v: Vec<crate::Model> = vec![
+                    crate::Model::Value("<#TS#>".to_string()),
+                ];
+                assert_eq!(models_eq(models, v), true);
+            },
+            Err(_) => panic!("Template::get_call_models test failed"),
+        }
+    }
+
+    #[test]
+    fn model_is_label() {
+        assert_eq!(crate::Model::Value("<{name}>".to_string()).is_label(), true);
+    }
+
+    #[test]
+    fn model_get_label() {
+        match crate::Model::Value("<{name}>".to_string()).get_label() {
+            Ok(label) => {
+                assert_eq!(label, "name");
+            }
+            _ => panic!("Model::get_label test failed"),
+        }
+    }
+
+    #[test]
+    fn model_is_call() {
+        assert_eq!(crate::Model::Value("<#TS#>".to_string()).is_call(), true);
+    }
+
+    #[test]
+    fn model_get_call_type() {
+        match crate::Model::Value("<#TS#>".to_string()).get_call_type(){
+            Ok(call_type) => match call_type {
+                crate::CallType::GetTimestamp => {},
+                _ => panic!("<#TS#> should be CallType::GetTimestamp"),
+            },
+            Err(_) => panic!("<#TS#> should be CallType::GetTimestamp"),
+        }
+    }
+
+    #[test]
+    fn model_get_timestamp_msec() {
+        match crate::Model::Value("<#TS#>".to_string()).get_timestamp_msec(){
+            Ok(_) => {},
+            Err(_) => panic!("Model::get_timestamp_msec test failed"),
+        }
+    }
+
+    #[test]
+    fn model_get_call_result() {
+        match crate::Model::Value("<#TS#>".to_string()).get_call_result(){
+            Ok(_) => {},
+            Err(_) => panic!("Model::get_call_result test failed"),
         }
     }
 }
