@@ -5,7 +5,7 @@ extern crate time;
 extern crate uuid;
 extern crate json;
 extern crate chrono;
-extern crate env_logger;
+extern crate log4rs;
 extern crate rusqlite;
 extern crate toml;
 extern crate serde_derive;
@@ -16,7 +16,6 @@ extern crate serial;
 extern crate hdtp;
 #[cfg(feature = "data_interface_text_file")]
 extern crate sensor_interface;
-#[macro_use]
 extern crate log;
 
 use std::time::Duration;
@@ -41,6 +40,16 @@ use hdtp::Hdtp;
 use sensor_interface::FileIf;
 #[cfg(feature = "data_interface_text_file")]
 use std::fs::File;
+
+use log::{error, warn, info, debug, trace, LevelFilter};
+use log4rs::{
+    append::{
+        console::{ConsoleAppender, Target},
+        file::FileAppender,
+    },
+    config::{Appender, Config, Root},
+    encode::pattern::PatternEncoder,
+};
 
 #[derive(Debug)]
 enum SnMsgHandleError{
@@ -80,13 +89,20 @@ struct NetworkNotify {
 }
 
 #[derive(Deserialize)]
-struct Config {
+struct AppConfig {
+    log: LogConfig,
     server: ServerConfig,
     client: ClientConfig,
     topic: TopicConfig,
     msg: MsgConfig,
     database: DatabaseConfig,
     data_if: DataIfConfig,
+}
+
+#[derive(Deserialize)]
+struct LogConfig {
+    file_path: String,
+    level: String,
 }
 
 #[derive(Deserialize)]
@@ -123,6 +139,53 @@ struct DataIfConfig {
     if_type: String,
 }
 
+fn init_app_log(log_cofig: &LogConfig) -> Result<(), ()> {
+    let level = match &log_cofig.level[..] {
+        "error" => LevelFilter::Error,
+        "warn" => LevelFilter::Warn,
+        "info" => LevelFilter::Info,
+        "debug" => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
+    };
+
+    // Build a stdout logger.
+    let stdout = ConsoleAppender::builder()
+        .encoder(Box::new(PatternEncoder::new("[{d(%Y-%m-%d %H:%M:%S)} {l} {M}] {m}\n")))
+        .target(Target::Stdout)
+        .build();
+
+    // Logging to log file.
+    let logfile = match FileAppender::builder()
+        .encoder(Box::new(PatternEncoder::new("[{d(%Y-%m-%d %H:%M:%S)} {l} {M}] {m}\n")))
+        .build(log_cofig.file_path.clone()) {
+            Ok(logfile) => logfile,
+            Err(_) => return Err(()),
+        };
+
+    // Log Trace level output to file where trace is the default level
+    // and the programmatically specified level to stdout.
+    let config = match Config::builder()
+        .appender(Appender::builder().build("logfile", Box::new(logfile)))
+        .appender(
+            Appender::builder()
+                .build("stdout", Box::new(stdout))
+            )
+        .build(
+            Root::builder()
+                .appender("logfile")
+                .appender("stdout")
+                .build(level),
+        ) {
+            Ok(config) => config,
+            Err(_) => return Err(()),
+        };
+
+    if let Err(_) = log4rs::init_config(config) {
+        return Err(())
+    }
+    Ok(())
+}
+
 fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
     let db = data_base::open_data_base(path, name);
 
@@ -138,7 +201,7 @@ fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
     }
 
     match data_base::create_device_data_table(&db) {
-        Ok(_ok) => info!("create DEVICE_DATA table successfully"),
+        Ok(_ok) => debug!("create DEVICE_DATA table successfully"),
         Err(err) => error!("create DEVICE_DATA table failed: {:?}", err),
     }
 
@@ -178,7 +241,7 @@ fn connect_to_server(server: &str, client_id: &str, channel_filters: &Vec<(Topic
     };
     info!("Connected!");
 
-    info!("Client identifier {:?}", client_id);
+    debug!("Client identifier {:?}", client_id);
     let mut conn = ConnectPacket::new("MQTT", client_id);
     conn.set_clean_session(true);
     conn.set_keep_alive(keep_alive);
@@ -194,7 +257,7 @@ fn connect_to_server(server: &str, client_id: &str, channel_filters: &Vec<(Topic
     }
 
     // const CHANNEL_FILTER: &'static str = "typing-speed-test.aoeu.eu";
-    info!("Applying channel filters {:?} ...", channel_filters);
+    debug!("Applying channel filters {:?} ...", channel_filters);
     let sub = SubscribePacket::new(10, channel_filters.to_vec());
     let mut buf = Vec::new();
     sub.encode(&mut buf).unwrap();
@@ -215,7 +278,7 @@ fn connect_to_server(server: &str, client_id: &str, channel_filters: &Vec<(Topic
                 panic!("SUBACK packet identifier not match");
             }
 
-            info!("Subscribed!");
+            debug!("Subscribed!");
             break;
         }
     }
@@ -343,7 +406,6 @@ fn init_data_interface(if_name: &str, if_type: &str) -> Result<FileIf, DataIfErr
 
 fn main() {
     env::set_var("RUST_LOG", env::var_os("RUST_LOG").unwrap_or_else(|| "info".into()));
-    env_logger::init();
 
     let matches = App::new("pepper_gateway")
         .author("Yu Yu <qianchenzhumeng@live.cn>")
@@ -358,7 +420,8 @@ fn main() {
 
     let config_file = matches.value_of("CONFIG_FILE").unwrap();
     let toml_string = fs::read_to_string(&config_file).unwrap();
-    let config: Config = toml::from_str(&toml_string).unwrap();
+    let config: AppConfig = toml::from_str(&toml_string).unwrap();
+    let app_log = config.log;
     let server_addr = config.server.address;
     let client_id = config.client.id;
     let pub_topic = config.topic.pub_topic;
@@ -370,6 +433,8 @@ fn main() {
     let data_if_name = config.data_if.if_name;
     let data_if_type = config.data_if.if_type;
     let mut try_to_connect = true;
+
+    init_app_log(&app_log).unwrap();
 
     // 数据模板校验
     let check = match format_msg(&msg_example, &template) {
@@ -449,7 +514,7 @@ fn main() {
             match data_if.read(&data_if_name) {
                 Ok(sn_msg) => {
                     if !sn_msg.is_empty() {
-                        match original_data_tx.send(sn_msg) {
+                        match original_data_tx.send(String::from(sn_msg.trim())) {
                             _ => {},
                         }
                     }
@@ -497,13 +562,14 @@ fn main() {
                                             match r {
                                                 Ok(_ok) => {
                                                         published = true;
-                                                        info!("pub msg successfully: {}", &pub_msg);
+                                                        debug!("pub msg successfully: {}", &pub_msg);
                                                     },
                                                 Err(err) => error!("pub msg failed: {:#?}", err),
                                             }
                                         },
-                                        Err(err) => {
-                                            error!("convert from data template failed: {:#?}", err);
+                                        Err(_) => {
+                                            error!("convert from data template failed: {}", sn_msg);
+                                            continue;
                                         },
                                     };
                                 },
@@ -585,7 +651,7 @@ fn main() {
                                                             match db_delete_rep_rx.recv() {
                                                                 Ok(r) => {
                                                                     if r {
-                                                                        info!("handle offline data successfully");
+                                                                        debug!("handle offline data successfully");
                                                                     } else {
                                                                         error!("delete offline data after publishing failed");
                                                                     }
@@ -633,7 +699,7 @@ fn main() {
                     };
                     match data_base::insert_data_to_device_data_table(&db, &device_data) {
                         Ok(_ok) => {
-                            info!("buffed data successfully");
+                            debug!("buffed data successfully");
                         },
                         Err(err) => {
                             error!("buffed data  failed: {:?}", err);
@@ -691,6 +757,7 @@ fn main() {
         }
     });
 
+    let mut log_server_con_err = true;
     loop {
         if try_to_connect {
             info!("Connecting to {:?} ... ", server_addr);
@@ -699,6 +766,10 @@ fn main() {
         let mut stream = match connect_to_server(&server_addr, &client_id, &channel_filters) {
             Ok(stream) => stream,
             Err(_err) => {
+                if log_server_con_err {
+                    warn!("Can't connect to {:?}", server_addr);
+                    log_server_con_err = false;
+                }
                 thread::sleep(Duration::new(10, 0));
                 continue;
             },
@@ -753,7 +824,7 @@ fn main() {
                 };
                 let current_timestamp = time::get_time().sec;
                 if keep_alive > 0 && current_timestamp >= next_ping_time {
-                    //info!("Sending PINGREQ to broker");
+                    //debug!("Sending PINGREQ to broker");
                     let pingreq_packet = PingreqPacket::new();
 
                     let mut buf = Vec::new();
@@ -786,7 +857,7 @@ fn main() {
 
             match packet {
                 VariablePacket::PingrespPacket(..) => {
-                    //info!("Receiving PINGRESP from broker ..");
+                    //debug!("Receiving PINGRESP from broker ..");
                 }
                 VariablePacket::PublishPacket(ref publ) => {
                     let msg = match str::from_utf8(&publ.payload_ref()[..]) {
@@ -796,7 +867,7 @@ fn main() {
                             continue;
                         }
                     };
-                    info!("PUBLISH ({}): {}", publ.topic_name(), msg);
+                    debug!("PUBLISH ({}): {}", publ.topic_name(), msg);
                 }
                 _ => {}
             }
@@ -818,6 +889,7 @@ fn main() {
             Err(err) => error!("send NetworkNotify failed: {}", err),
         }
         error!("lose connection to {}", &server_addr);
+        log_server_con_err = true;
         try_to_connect = true;
     }
 }
