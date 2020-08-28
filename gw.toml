@@ -8,6 +8,7 @@ address = "127.0.0.1:1883"
 
 [client]
 id = "pepper_gw"
+keep_alive = 60
 
 [topic]
 sub_topic = "ctrl/#"

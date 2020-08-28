@@ -113,6 +113,7 @@ struct ServerConfig {
 #[derive(Deserialize)]
 struct ClientConfig {
     id: String,
+    keep_alive: u16,
 }
 
 #[derive(Deserialize)]
@@ -232,8 +233,7 @@ fn get_msg_from_data(data: &DeviceData) -> String {
     data.msg.clone()
 }
 
-fn connect_to_server(server: &str, client_id: &str, channel_filters: &Vec<(TopicFilter, QualityOfService)>) -> Result<TcpStream, ()> {
-    let keep_alive = 10;
+fn connect_to_server(server: &str, client_id: &str, keep_alive: u16, channel_filters: &Vec<(TopicFilter, QualityOfService)>) -> Result<TcpStream, ()> {
 
     let mut stream = match TcpStream::connect(server) {
         Ok(stream) => stream,
@@ -424,6 +424,7 @@ fn main() {
     let app_log = config.log;
     let server_addr = config.server.address;
     let client_id = config.client.id;
+    let keep_alive = config.client.keep_alive;
     let pub_topic = config.topic.pub_topic;
     let channel_filters: Vec<(TopicFilter, QualityOfService)> = vec![(TopicFilter::new(config.topic.sub_topic).unwrap(), QualityOfService::Level0)];
     let database_path = config.database.path;
@@ -763,7 +764,7 @@ fn main() {
             info!("Connecting to {:?} ... ", server_addr);
             try_to_connect = false;
         }
-        let mut stream = match connect_to_server(&server_addr, &client_id, &channel_filters) {
+        let mut stream = match connect_to_server(&server_addr, &client_id, keep_alive, &channel_filters) {
             Ok(stream) => stream,
             Err(_err) => {
                 if log_server_con_err {
@@ -807,7 +808,6 @@ fn main() {
         }
 
         let ping_thread = thread::spawn(move || {
-            let keep_alive = 10;
             let mut last_ping_time = 0;
             let mut next_ping_time = last_ping_time + (keep_alive as f32 * 0.9) as i64;
             loop {
