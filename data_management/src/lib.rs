@@ -33,6 +33,20 @@ pub mod data_management{
             }
         }
 
+        pub fn device_data_table_exsits(db: &rusqlite::Connection) -> bool {
+            match db.prepare("SELECT * FROM sqlite_master WHERE name='DEVICE_DATA' and type='table'") {
+                Ok(mut stmt) => {
+                    match stmt.exists(rusqlite::NO_PARAMS) {
+                        Ok(r) => {
+                            r
+                        }
+                        Err(_) => false,
+                    }
+                },
+                Err(_err) => false,
+            }
+        }
+
         pub fn insert_data_to_device_data_table(db: &rusqlite::Connection, data: &crate::data_management::DeviceData) -> Result<usize, ()> {
             let r = db.execute(
                 "INSERT INTO DEVICE_DATA(MSG) VALUES(?1)",
@@ -43,12 +57,14 @@ pub mod data_management{
                 Err(_err) => Err(()),
             }
         }
+
         pub fn querry_device_data(db: &rusqlite::Connection) -> Result<rusqlite::Statement, ()> {
             match db.prepare("SELECT * FROM DEVICE_DATA") {
                 Ok(stmt) => Ok(stmt),
                 Err(_err) => Err(()),
             }
         }
+
         pub fn delete_device_data(db: &rusqlite::Connection, id: u32) -> Result<usize, ()> {
             let r = db.execute(
                 "DELETE FROM DEVICE_DATA WHERE ID =(?1)",
@@ -66,6 +82,25 @@ pub mod data_management{
             DeviceData {
                 msg: String::from(msg),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        let db = crate::data_management::data_base::open_data_base("./", "test.db");
+        match db {
+            Ok(db) => {
+                match crate::data_management::data_base::create_device_data_table(&db) {
+                    _ => {},
+                }
+                assert_eq!(crate::data_management::data_base::device_data_table_exsits(&db), true);
+            },
+            Err(err) => {
+                panic!("Problem opening the database: {:?}", err)
+            },
         }
     }
 }

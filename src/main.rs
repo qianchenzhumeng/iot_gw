@@ -133,6 +133,10 @@ fn init_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
         },
     };
 
+    if data_base::device_data_table_exsits(&db) {
+        return Ok(db);
+    }
+
     match data_base::create_device_data_table(&db) {
         Ok(_ok) => info!("create DEVICE_DATA table successfully"),
         Err(err) => error!("create DEVICE_DATA table failed: {:?}", err),
