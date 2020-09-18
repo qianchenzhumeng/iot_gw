@@ -1,5 +1,5 @@
 [package]
-name = "pepper_dss_gateway"
+name = "gw"
 version = "0.1.0"
 authors = ["Dell"]
 edition = "2018"
@@ -9,7 +9,6 @@ edition = "2018"
 [dependencies]
 data_management = { path = "./data_management" }
 sensor_interface = { path = "./sensor_interface" }
-mqtt-protocol = "0.8.1"
 log = "0.4"
 clap = "2"
 log4rs = "0.10.0"
@@ -23,13 +22,21 @@ serde = "1.0"
 data_template = {path = "./data_template"}
 serial = {version = "=0.4.0", path = "./serial-rs/serial"}
 hdtp = {path = "./hdtp"}
+paho-mqtt = "0.7.1"
 
 [dependencies.rusqlite]
 version = "0.23.1"
 features = ["bundled"]
 
+[dependencies.paho-mqtt-sys]
+default-features = false
+version = "0.3"
+
 [features]
-#default = ["data_interface_serial_port"]
-default = ["data_interface_text_file"]
+#default = ["data_interface_serial_port", "build_bindgen", "bundled", "ssl"]
+default = ["data_interface_text_file", "build_bindgen", "bundled", "ssl"]
 data_interface_serial_port = []
 data_interface_text_file = []
+build_bindgen = ["paho-mqtt-sys/build_bindgen"]
+bundled = ["paho-mqtt-sys/bundled"]
+ssl = ["paho-mqtt-sys/ssl"]

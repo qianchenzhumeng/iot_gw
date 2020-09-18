@@ -9,10 +9,12 @@ address = "127.0.0.1:1883"
 [client]
 id = "pepper_gw"
 keep_alive = 60
+username = "pepper_gw"
 
 [topic]
 sub_topic = "ctrl/#"
 pub_topic = "v1/gateway/telemetry"
+qos = 0
 
 [msg]
 example = "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\"voltage\": 3.88,\"status\": 0}"
