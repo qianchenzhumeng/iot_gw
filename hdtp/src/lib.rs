@@ -1,5 +1,6 @@
 
 use std::fmt;
+use log::error;
 
 const MAX_LENGTH: usize = 255;
 
@@ -155,8 +156,8 @@ impl Hdtp {
                 self.rx_msg_is_ready = true;
             },
             Err(err) => {
-                println!("rx_frame_fcs: {}", self.rx_frame_fcs);
-                println!("crc 16: {}", err);
+                error!("rx_frame_fcs: {}", self.rx_frame_fcs);
+                error!("crc 16: {}", err);
             },
         }
     }
