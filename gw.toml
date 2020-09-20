@@ -1,7 +1,12 @@
 [log]
-file_path = "gw.log"
+file_path = "log/gw.log"
+file_path_pattern = "log/gw{}.log.gz"
 # error, warn, info, debug, trace
 level = "info"
+# The size limit in bytes.
+size = 1048576  #1*1024*1024
+# The maximum number of archived logs to maintain
+count = 5
 
 [server]
 address = "127.0.0.1:1883"

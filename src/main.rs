@@ -42,7 +42,14 @@ use log::{error, warn, info, debug, LevelFilter};
 use log4rs::{
     append::{
         console::{ConsoleAppender, Target},
-        file::FileAppender,
+        rolling_file::{
+            RollingFileAppender,
+            policy::compound::{
+                CompoundPolicy,
+                roll::fixed_window::FixedWindowRoller,
+                trigger::size::SizeTrigger,
+            },
+        },
     },
     config::{Appender, Config, Root},
     encode::pattern::PatternEncoder,
@@ -95,7 +102,10 @@ struct AppConfig {
 #[derive(Deserialize)]
 struct LogConfig {
     file_path: String,
+    file_path_pattern: String,
     level: String,
+    count: u32,
+    size: u64,
 }
 
 #[derive(Deserialize)]
@@ -135,8 +145,8 @@ struct DataIfConfig {
     if_type: String,
 }
 
-fn init_app_log(log_cofig: &LogConfig) -> Result<(), ()> {
-    let level = match &log_cofig.level[..] {
+fn init_app_log(log_config: &LogConfig) -> Result<(), ()> {
+    let level = match &log_config.level[..] {
         "error" => LevelFilter::Error,
         "warn" => LevelFilter::Warn,
         "info" => LevelFilter::Info,
@@ -153,11 +163,19 @@ fn init_app_log(log_cofig: &LogConfig) -> Result<(), ()> {
         .build();
 
     // Logging to log file.
-    let logfile = match FileAppender::builder()
+    let trigger = SizeTrigger::new(log_config.size);
+    let roller = match FixedWindowRoller::builder()
+        .build(&log_config.file_path_pattern, log_config.count){
+            Ok(roller) => roller,
+            Err(_) => return Err(()),
+        };
+    let policy = CompoundPolicy::new(Box::new(trigger), Box::new(roller));
+    let logfile = match RollingFileAppender::builder()
         .encoder(Box::new(PatternEncoder::new(
             "[{d(%Y-%m-%d %H:%M:%S)} {l} {M}:{T}] {m}\n",
         )))
-        .build(log_cofig.file_path.clone())
+        .append(true)
+        .build(&log_config.file_path, Box::new(policy))
     {
         Ok(logfile) => logfile,
         Err(_) => return Err(()),
@@ -414,7 +432,6 @@ fn main() {
             loop {
                 match data_if.read(&mut buf[..]) {
                     Ok(_n) => {
-                        //println!("{}", hdtp);
                         hdtp.input(buf[0]);
                         match hdtp.get_msg() {
                             Ok(msg) => match original_data_tx.send(msg) {
@@ -612,6 +629,7 @@ fn main() {
         let mut id: u32;
         let mut cloud_is_connected = false;
         for datum in datum_receiver.iter() {
+            info!("datum: {{ id: {}, type: {:?}, value: ... }}", datum.id, datum.datum_type);
             match datum.datum_type {
                 DatumType::Notice => {
                     match datum.id {
@@ -698,7 +716,7 @@ fn main() {
         .spawn(move || {
             for msg in cloud_statue_announcement_receiver.iter() {
                 if let Some(_msg) = msg {
-                    error!("Successfully connected.");
+                    info!("Successfully connected.");
                     // 发送联网消息给离线数据处理线程
                     if let Err(err) = cloud_link_broken_msg_sender.send(Some(0)) {
                         error!("Error send cloud link broken msg: {}", err);
@@ -802,7 +820,7 @@ fn main() {
                 match datum_publish_receiver.recv_timeout(Duration::from_secs(10)) {
                 Ok(option) => if let Some(msg) = option {
                     let message = mqtt::Message::new(pub_topic.clone(), msg, qos);
-                    info!("message: {}", message);
+                    debug!("message: {}", message);
                     if let Err(e) = cli.publish(message) {
                         error!("Error publishing message: {:?}", e);
                         publish_result = false;
