@@ -13,6 +13,7 @@
 - 支持数据模板，根据数据模板重新格式化来自终端的数据、添加自定义属性、预定义属性(例如添加时间戳)等，从而生成新的JSON数据
 - 支持从串口读取终端的数据
 - 支持缓存来自终端的任意类型数据(最长 256 字节)
+- 日志
 
 **计划开发的功能**：
 
@@ -76,10 +77,8 @@ echo "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\
 
 ```
 [features]
-default = ["data_interface_serial_port"]
-#default = ["data_interface_text_file"]
-data_interface_serial_port = []
-data_interface_text_file = []
+default = ["data_interface_serial_port", "build_bindgen", "bundled", "ssl"]
+#default = ["data_interface_text_file", "build_bindgen", "bundled", "ssl"]
 ```
 
 修改配置文件（默认是 gw.toml），指定串口，并且将数据接口类型设置为 `serial_port`：
@@ -208,6 +207,7 @@ void loop() {
   
 - mips-unknown-linux-uclibc
   - 需要为该目标平台编译 rust：[Cross Compile Rust For OpenWRT](https://qianchenzhumeng.github.io/posts/cross-compile-rust-for-openwrt/)
+  - 需要编译 openssl
   - 需要将子目录 `termios-rs`、`serial-rs`、`ioctl-rs` 切换到 `openwrt_cc` 分支
   - 编译命令: 
   
