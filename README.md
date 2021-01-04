@@ -213,8 +213,72 @@ void loop() {
   
   ```
   #编译 libsqlite3-sys 需要指定交叉编译工具链
+  export STAGING_DIR=/mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2
   export CC_mips_unknown_linux_uclibc=mips-openwrt-linux-uclibc-gcc
   cargo build --target=mips-unknown-linux-uclibc --release
   ```
 
 默认启用了 rusqlite 的 bundled 特性，libsqlite3-sys 会使用 cc crate 编译 sqlite3，交叉编译时要在环境变量中指定 cc crate使用的编译器(cc crate 的文档中有说明)，否则会调用系统默认的 cc，导致编译过程中出现文件格式无法识别的情况。
+
+### 5. 交叉编译问题解答（mips-unknown-linux-uclibc）
+
+#### (1) 找不到 libssl
+
+> /mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2/bin/../lib/gcc/mips-openwrt-linux-uclibc/4.8.3/../../../../mips-openwrt-linux-uclibc/bin/ld: cannot find -lssl
+> /mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2/bin/../lib/gcc/mips-openwrt-linux-uclibc/4.8.3/../../../../mips-openwrt-linux-uclibc/bin/ld: cannot find -lcrypto
+
+交叉编译 openssl：
+
+```bash
+# 设置 STAGING_DIR 环境变量（交叉编译工具链路径）
+export STAGING_DIR=/mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2
+# 下载、解压源码
+wget https://www.openssl.org/source/openssl-1.0.2l.tar.gz
+tar zxf openssl-1.0.2l.tar.gz 
+cd openssl-1.0.2l
+```
+
+```
+# --prefix 为安装目录
+./Configure linux-mips32 no-asm shared --cross-compile-prefix=mips-openwrt-linux-uclibc- --prefix=~/wsl/source/openssl
+make
+make install
+```
+
+将头文件以及共享库复制到交叉编译工具链的相关目录下：
+
+```
+cp ~/wsl/source/openssl/include/openssl $STAGING_DIR/include -R
+cp ~/wsl/source/openssl/lib/*.so* $STAGING_DIR/lib
+```
+
+#### (2) 找不到 libanl
+
+> /mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2/bin/../lib/gcc/mips-openwrt-linux-uclibc/4.8.3/../../../../mips-openwrt-linux-uclibc/bin/ld: cannot find -lanl
+
+按照 [src/CMakeLists.txt: fix build on uclibc or musl](https://github.com/eclipse/paho.mqtt.c/commit/517e8659ab566b15cc409490a432e8935b164de8) 修改 `.cargo/registry/src/crates.rustcc.com-a21e0f92747beca3/paho-mqtt-sys-0.3.0/paho.mqtt.c/src/CMakeLists.txt`
+
+修改后仍然可能因找到了主机的 libanl 报错，如果还报错，按如下方式修改：
+
+```
+        #SET(LIBS_SYSTEM c dl pthread anl rt)
+		SET(LIBS_SYSTEM c dl pthread rt)
+```
+
+#### (3) 找不到 libclang
+
+> thread 'main' panicked at 'Unable to find libclang: "couldn\'t find any valid shared libraries matching: [\'libclang.so\', \'libclang-*.so\', \'libclang.so.*\']
+
+```
+sudo apt-get install clang libclang-dev
+```
+
+#### (4) 找不到 bindings
+> thread 'main' panicked at 'No generated bindings exist for the version/target: bindings/bindings_paho_mqtt_c_1.3.2-mips-unknown-linux-uclibc.rs', paho-mqtt-sys/build.rs:102:13
+
+```bash
+cargo install bindgen
+sudo apt install libc6-dev-i386
+cd ~/.cargo/registry/src/crates.rustcc.com-a21e0f92747beca3/paho-mqtt-sys-0.3.0
+TARGET=mips-unknown-linux-uclibc bindgen wrapper.h -o bindings/bindings_paho_mqtt_c_1.3.2-mips-unknown-linux-uclibc.rs -- -Ipaho.mqtt.c/src
+```
