@@ -274,7 +274,7 @@ cargo run -- -c gw.toml
   - 需要将子目录 `termios-rs`、`serial-rs`、`ioctl-rs` 切换到 `openwrt_cc` 分支
   - 编译命令: 
   
-  ```toml
+  ```bash
   #编译 libsqlite3-sys 需要指定交叉编译工具链
   export STAGING_DIR=/mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2
   export CC_mips_unknown_linux_uclibc=mips-openwrt-linux-uclibc-gcc
