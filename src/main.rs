@@ -30,7 +30,8 @@ use serial::prelude::*;
 use std::io::prelude::*;
 use std::sync::mpsc;
 use std::{env, fs, process, str, thread};
-
+#[cfg(feature = "ssl")]
+use std::path::Path;
 extern crate paho_mqtt as mqtt;
 
 #[cfg(feature = "data_interface_text_file")]
@@ -92,6 +93,8 @@ struct Datum {
 struct AppConfig {
     log: LogConfig,
     server: ServerConfig,
+    #[cfg(feature = "ssl")]
+    tls: TlsFiles,
     client: ClientConfig,
     topic: TopicConfig,
     msg: MsgConfig,
@@ -111,6 +114,13 @@ struct LogConfig {
 #[derive(Deserialize)]
 struct ServerConfig {
     address: String,
+}
+
+#[cfg(feature = "ssl")]
+#[derive(Deserialize)]
+struct TlsFiles {
+    cafile: String,
+    key_store: String,
 }
 
 #[derive(Deserialize)]
@@ -367,6 +377,8 @@ fn main() {
     let config: AppConfig = toml::from_str(&toml_string).unwrap();
     let app_log = config.log;
     let server_addr = config.server.address;
+    #[cfg(feature = "ssl")]
+    let tls = config.tls;
     let client = config.client;
     let keep_alive = client.keep_alive;
     let pub_topic = config.topic.pub_topic;
@@ -394,6 +406,20 @@ fn main() {
             "please check msg.example and msg.template config-file: {}",
             config_file
         );
+    }
+
+    // 检查证书和密钥库是否存在
+    #[cfg(feature = "ssl")]
+    if !Path::new(&tls.cafile).exists() {
+        panic!(
+            "The trust store file does not exist: {}", &tls.cafile
+        );
+    } else {
+        if !Path::new(&tls.key_store).exists() {
+            panic!(
+                "The key store file does not exist: {}", &tls.key_store
+            );
+        }
     }
 
     #[cfg(feature = "data_interface_serial_port")]
@@ -768,6 +794,22 @@ fn main() {
             cli.set_timeout(Duration::from_secs(5));
             let sub_msg_receiver = cli.start_consuming();
 
+            #[cfg(feature = "ssl")]
+            let ssl_opts = mqtt::SslOptionsBuilder::new()
+                .trust_store(&tls.cafile)
+                .key_store(&tls.key_store)
+                .finalize();
+
+            #[cfg(feature = "ssl")]
+            let conn_opts = mqtt::ConnectOptionsBuilder::new()
+                .ssl_options(ssl_opts)
+                .keep_alive_interval(Duration::from_secs(keep_alive.into()))
+                .mqtt_version(mqtt::MQTT_VERSION_3_1_1)
+                .clean_session(true)
+                .user_name(client.username)
+                .finalize();
+
+            #[cfg(not(feature = "ssl"))]
             let conn_opts = mqtt::ConnectOptionsBuilder::new()
                 .keep_alive_interval(Duration::from_secs(keep_alive.into()))
                 .mqtt_version(mqtt::MQTT_VERSION_3_1_1)

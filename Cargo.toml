@@ -34,7 +34,8 @@ version = "0.3"
 
 [features]
 #default = ["data_interface_serial_port", "build_bindgen", "bundled", "ssl"]
-default = ["data_interface_text_file", "build_bindgen", "bundled", "ssl"]
+#default = ["data_interface_text_file", "build_bindgen", "bundled", "ssl"]
+default = ["data_interface_text_file", "build_bindgen", "bundled"]
 data_interface_serial_port = []
 data_interface_text_file = []
 build_bindgen = ["paho-mqtt-sys/build_bindgen"]

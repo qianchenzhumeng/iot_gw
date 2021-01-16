@@ -14,42 +14,41 @@
 - 支持从串口读取终端的数据
 - 支持缓存来自终端的任意类型数据(最长 256 字节)
 - 日志
+- 支持MQTTS(TLS v1.2，v1.3)
 
 **计划开发的功能**：
 
-- 支持TSL加密
 - 提供配置信息的WEB界面
 
 ### 2. 使用示例
 
 在本地启动 MQTT broker，监听 1883 端口，例如使用 mosquitto：
 
-```
-mosquitto -v -p 1883
+```bash
+mosquitto -v -c mosquitto.conf
 ```
 
 或者修改配置文件 `gw.toml`，指定可用的 MQTT broker：
 
-```
+```toml
 [server]
 address = "127.0.0.1:1883"
 ```
 
-#### （1） 从文件读取数据（默认）
+#### (1) 从文件读取数据（默认）
 
 修改 Cargo.toml 文件，开启 `data_interface_text_file` 特性（默认开启此特性）：
 
-```
+```toml
 [features]
-#default = ["data_interface_serial_port"]
-default = ["data_interface_text_file"]
-data_interface_serial_port = []
-data_interface_text_file = []
+#default = ["data_interface_serial_port", "build_bindgen", "bundled", "ssl"]
+#default = ["data_interface_text_file", "build_bindgen", "bundled", "ssl"]
+default = ["data_interface_text_file", "build_bindgen", "bundled"]
 ```
 
 修改配置文件（默认是 gw.toml），指定串口，并且将数据接口类型设置为 `text_file`（默认为此配置）：
 
-```
+```toml
 [data_if]
 #if_name = "/dev/ttyS14"
 #if_type = "serial_port"
@@ -59,13 +58,13 @@ if_type = "text_file"
 
 编译运行网关程序：
 
-```
+```bash
 cargo run -- -c gw.toml
 ```
 
 在文件中写入数据（需要有换行 `'\n'`）：
 
-```
+```bash
 echo "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\"voltage\": 3.88,\"status\": 0}" > data_if.txt
 ```
 
@@ -75,15 +74,17 @@ echo "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\
 
 修改 Cargo.toml 文件，开启 `data_interface_serial_port` 特性
 
-```
+```toml
 [features]
-default = ["data_interface_serial_port", "build_bindgen", "bundled", "ssl"]
+#default = ["data_interface_serial_port", "build_bindgen", "bundled", "ssl"]
 #default = ["data_interface_text_file", "build_bindgen", "bundled", "ssl"]
+#default = ["data_interface_text_file", "build_bindgen", "bundled"]
+default = ["data_interface_serial_port", "build_bindgen", "bundled"]
 ```
 
 修改配置文件（默认是 gw.toml），指定串口，并且将数据接口类型设置为 `serial_port`：
 
-```
+```toml
 [data_if]
 if_name = "/dev/ttyS14"
 if_type = "serial_port"
@@ -93,7 +94,7 @@ if_type = "serial_port"
 
 编译运行网关程序：
 
-```
+```bash
 cargo run -- -c gw.toml
 ```
 
@@ -105,7 +106,7 @@ cargo run -- -c gw.toml
 
 Arduino 示例程序：
 
-```
+```c++
 void setup() {
   Serial.begin(115200);
 }
@@ -159,6 +160,68 @@ void loop() {
 }
 ```
 
+#### (3) 使用 TLS
+
+在本地启动 MQTT broker，例如使用 mosquitto：
+
+```bash
+mosquitto -c mosquitto.conf
+```
+
+配置文件内容（按实际情况修改 ca 文件路径）：
+
+```shell
+# mosquitto.conf
+log_type error
+log_type warning
+log_type notice
+log_type information
+log_type debug
+
+allow_anonymous true
+
+# non-SSL listeners
+listener 1883
+
+# server authentication - no client authentication
+listener 18885
+
+# 指定 ca 文件路径
+cafile ca/ca.crt
+certfile ca/server.crt
+keyfile ca/server.key
+require_certificate false
+tls_version tlsv1.2
+```
+
+修改 Cargo.toml 文件，开启 `ssl` 特性：
+
+```toml
+[features]
+#default = ["data_interface_serial_port", "build_bindgen", "bundled", "ssl"]
+default = ["data_interface_text_file", "build_bindgen", "bundled", "ssl"]
+#default = ["data_interface_text_file", "build_bindgen", "bundled"]
+```
+
+修改配置文件（默认是 gw.toml），使用 ssl 协议，并指定 ca 文件：
+
+```toml
+[server]
+#address = "127.0.0.1:1883"
+address = "ssl://127.0.0.1:18885"
+
+[tls]
+cafile = "ca/ca.crt"
+# pem 文件生成方式：cat client.crt client.key ca.crt > client.pem
+key_store = "ca/client.pem"
+```
+
+编译运行网关程序：
+
+```bash
+cargo run -- -c gw.toml
+```
+
 ### 3. 数据模板引擎功能说明
 
  模板支持的功能：
@@ -177,7 +240,7 @@ void loop() {
 
  模板示例（以 `gw.toml` 中的为例）：
 
-```
+```bash
 # 原始数据示例
 "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\"voltage\": 3.88,\"status\": 0}"
 # 模板
@@ -186,7 +249,7 @@ void loop() {
 
 以上设置的转换效果为：
 
-```
+```bash
 # 原始数据
 {"id":1,"name":"SN-001","temperature": 27.45,"humidity": 25.36,"voltage": 3.88,"status": 0}
 # 输出数据
@@ -211,7 +274,7 @@ void loop() {
   - 需要将子目录 `termios-rs`、`serial-rs`、`ioctl-rs` 切换到 `openwrt_cc` 分支
   - 编译命令: 
   
-  ```
+  ```toml
   #编译 libsqlite3-sys 需要指定交叉编译工具链
   export STAGING_DIR=/mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2
   export CC_mips_unknown_linux_uclibc=mips-openwrt-linux-uclibc-gcc
@@ -220,7 +283,9 @@ void loop() {
 
 默认启用了 rusqlite 的 bundled 特性，libsqlite3-sys 会使用 cc crate 编译 sqlite3，交叉编译时要在环境变量中指定 cc crate使用的编译器(cc crate 的文档中有说明)，否则会调用系统默认的 cc，导致编译过程中出现文件格式无法识别的情况。
 
-### 5. 交叉编译问题解答（mips-unknown-linux-uclibc）
+为其他平台进行交叉编译时，需要为其单独处理 `termios-rs`、`serial-rs`、`ioctl-rs`、`paho-mqtt-sys`，这些库对应的 github 仓库中有相应的说明。
+
+### 5. 交叉编译问题解答
 
 #### (1) 找不到 libssl
 
@@ -238,7 +303,7 @@ tar zxf openssl-1.0.2l.tar.gz
 cd openssl-1.0.2l
 ```
 
-```
+```bash
 # --prefix 为安装目录
 ./Configure linux-mips32 no-asm shared --cross-compile-prefix=mips-openwrt-linux-uclibc- --prefix=~/wsl/source/openssl
 make
@@ -247,7 +312,7 @@ make install
 
 将头文件以及共享库复制到交叉编译工具链的相关目录下：
 
-```
+```bash
 cp ~/wsl/source/openssl/include/openssl $STAGING_DIR/include -R
 cp ~/wsl/source/openssl/lib/*.so* $STAGING_DIR/lib
 ```
@@ -260,7 +325,7 @@ cp ~/wsl/source/openssl/lib/*.so* $STAGING_DIR/lib
 
 修改后仍然可能因找到了主机的 libanl 报错，如果还报错，按如下方式修改：
 
-```
+```cmake
         #SET(LIBS_SYSTEM c dl pthread anl rt)
 		SET(LIBS_SYSTEM c dl pthread rt)
 ```
@@ -269,7 +334,7 @@ cp ~/wsl/source/openssl/lib/*.so* $STAGING_DIR/lib
 
 > thread 'main' panicked at 'Unable to find libclang: "couldn\'t find any valid shared libraries matching: [\'libclang.so\', \'libclang-*.so\', \'libclang.so.*\']
 
-```
+```bash
 sudo apt-get install clang libclang-dev
 ```
 
@@ -282,3 +347,17 @@ sudo apt install libc6-dev-i386
 cd ~/.cargo/registry/src/crates.rustcc.com-a21e0f92747beca3/paho-mqtt-sys-0.3.0
 TARGET=mips-unknown-linux-uclibc bindgen wrapper.h -o bindings/bindings_paho_mqtt_c_1.3.2-mips-unknown-linux-uclibc.rs -- -Ipaho.mqtt.c/src
 ```
+
+### 6. 网关运行问题解答
+
+#### (1) 数据接口类型未知
+
+> thread 'main' panicked at 'Init data interface failed: DataIfUnknownType'
+
+Cargo.toml 中有关数据接口的特性和网关配置文件内的不一致。
+
+#### (2) 连接错误
+
+> Error connecting to the broker: NULL Parameter: NULL Parameter
+
+使用 ssl 连接 broker，但是没有在 `Cargo.toml` 中启用 `ssl` 特性

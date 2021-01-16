@@ -10,6 +10,12 @@ count = 5
 
 [server]
 address = "127.0.0.1:1883"
+#address = "ssl://127.0.0.1:18885"
+
+[tls]
+cafile = "ca/ca.crt"
+# pem 文件生成方式：cat client.crt client.key ca.crt > client.pem
+key_store = "ca/client.pem"
 
 [client]
 id = "pepper_gw"
