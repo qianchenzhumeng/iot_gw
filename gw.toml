@@ -25,6 +25,7 @@ username = "pepper_gw"
 [topic]
 sub_topic = "ctrl/#"
 pub_topic = "v1/gateway/telemetry"
+pub_log_topic = "v1/devices/me/telemetry"
 qos = 0
 
 [msg]

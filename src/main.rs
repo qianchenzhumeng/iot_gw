@@ -17,6 +17,7 @@ extern crate time;
 extern crate toml;
 extern crate uuid;
 
+use chrono::{Local, DateTime};
 use data_management::data_management::{data_base, DeviceData};
 use std::time::Duration;
 
@@ -134,6 +135,7 @@ struct ClientConfig {
 struct TopicConfig {
     sub_topic: String,
     pub_topic: String,
+    pub_log_topic: String,
     qos: i32,
 }
 
@@ -354,6 +356,20 @@ fn init_data_interface(if_name: &str, if_type: &str) -> Result<FileIf, DataIfErr
     }
 }
 
+// 格式化 log 信息
+fn format_log(msg: &str) -> Result<String, ()> {
+    let local: DateTime<Local> = Local::now(); // 本地时间
+    let time_str = local.format("%Y-%m-%d %H:%M:%S").to_string();
+    let log: String;
+    if msg.is_empty() {
+        log = format!("{{\"LOGS\": \"[{}]\"}}", time_str);
+    } else {
+        log = format!("{{\"LOGS\": \"[{}]: {}\"}}", time_str, msg);
+    }
+    info!("{}", log);
+    Ok(log)
+}
+
 fn main() {
     env::set_var(
         "RUST_LOG",
@@ -382,6 +398,7 @@ fn main() {
     let client = config.client;
     let keep_alive = client.keep_alive;
     let pub_topic = config.topic.pub_topic;
+    let pub_log_topic = config.topic.pub_log_topic;
     let sub_topic = config.topic.sub_topic;
     let qos = config.topic.qos;
     let database_path = config.database.path;
@@ -868,6 +885,17 @@ fn main() {
                         publish_result = false;
                     } else {
                         publish_result = true;
+                        // 数据发布成功后发送 LOG
+                        match format_log("") {
+                            Ok(log) => {
+                                let log_msg = mqtt::Message::new(pub_log_topic.clone(), log, qos);
+                                match cli.publish(log_msg) {
+                                    Err(err) => error!("Error publishing log: {:?}", err),
+                                    _ => {}
+                                }
+                            },
+                            Err(err) => error!("Error formating log: {:?}", err), 
+                        }
                     }
                     match publish_result_sender.send(publish_result) {
                         Err(err) => error!("Error send publish result: {}", err),
