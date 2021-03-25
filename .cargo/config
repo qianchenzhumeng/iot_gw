@@ -1,3 +1,0 @@
-[target.mips-unknown-linux-uclibc]
-linker = "mips-openwrt-linux-uclibc-gcc"
-ar = "mips-openwrt-linux-uclibc-ar"

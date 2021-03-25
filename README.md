@@ -287,7 +287,7 @@ cargo run -- -c gw.toml
 
 ### 5. 交叉编译问题解答
 
-#### (1) 找不到 libssl
+#### (1) ssl 相关
 
 > /mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2/bin/../lib/gcc/mips-openwrt-linux-uclibc/4.8.3/../../../../mips-openwrt-linux-uclibc/bin/ld: cannot find -lssl
 > /mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2/bin/../lib/gcc/mips-openwrt-linux-uclibc/4.8.3/../../../../mips-openwrt-linux-uclibc/bin/ld: cannot find -lcrypto
@@ -315,6 +315,33 @@ make install
 ```bash
 cp ~/wsl/source/openssl/include/openssl $STAGING_DIR/include -R
 cp ~/wsl/source/openssl/lib/*.so* $STAGING_DIR/lib
+```
+
+如果是 OpenWrt，可以通过 make menuconfig 启用 libopenssl（Libraries -> SSL -> libopenssl），然后将头文件以及共享库复制到交叉编译工具链的相关目录下：
+
+```bash
+cd ~/openwrt-19.07.2/build_dir/target-mipsel_24kc_musl/openssl-1.1.1d
+cp *.so $STAGING_DIR/lib
+cp include/openssl/ $STAGING_DIR/include -R
+```
+
+> Could not find directory of OpenSSL installation, and this `-sys` crate cannot
+>   proceed without this knowledge. If OpenSSL is installed and this crate had
+>   trouble finding it,  you can set the `OPENSSL_DIR` environment variable for the
+>   compilation process.
+>
+>   Make sure you also have the development packages of openssl installed.
+>   For example, `libssl-dev` on Ubuntu or `openssl-devel` on Fedora.
+
+该信息前面会有一段环境变量相关的内容，根据提示设置相关的变量，例如：
+
+```bash
+# 设置环境变量
+export MIPSEL_UNKNOWN_LINUX_MUSL_OPENSSL_DIR=$STAGING_DIR
+export MIPSEL_UNKNOWN_LINUX_MUSL_OPENSSL_LIB_DIR=$STAGING_DIR/lib
+export MIPSEL_UNKNOWN_LINUX_MUSL_OPENSSL_INCLUDE_DIR=$STAGING_DIR/include
+# 编译
+cargo build --target=mipsel-unknown-linux-musl --release -vv
 ```
 
 #### (2) 找不到 libanl
@@ -345,7 +372,53 @@ sudo apt-get install clang libclang-dev
 cargo install bindgen
 sudo apt install libc6-dev-i386
 cd ~/.cargo/registry/src/crates.rustcc.com-a21e0f92747beca3/paho-mqtt-sys-0.3.0
-TARGET=mips-unknown-linux-uclibc bindgen wrapper.h -o bindings/bindings_paho_mqtt_c_1.3.2-mips-unknown-linux-uclibc.rs -- -Ipaho.mqtt.c/src
+TARGET=mips-unknown-linux-uclibc bindgen wrapper.h -o bindings/bindings_paho_mqtt_c_1.3.2-mips-unknown-linux-uclibc.rs -- -Ipaho.mqtt.c/src --verbose
+```
+
+#### (5) 找不到 C 库头文件
+
+>   debug:clang version: clang version 10.0.0-4ubuntu1
+>   debug:bindgen include path: -I/mnt/f/wsl/project/iot_gw/target/mipsel-unknown-linux-musl/release/build/paho-mqtt-sys-0e7cd946c58a7093/out/include
+>
+>   --- stderr
+>   fatal: not a git repository (or any of the parent directories): .git
+>   /usr/include/stdio.h:33:10: fatal error: 'stddef.h' file not found
+>   /usr/include/stdio.h:33:10: fatal error: 'stddef.h' file not found, err: true
+>   thread 'main' panicked at 'Unable to generate bindings: ()', /home/dell/.cargo/registry/src/crates.rustcc.com-a21e0f92747beca3/paho-mqtt-sys-0.3.0/build.rs:139:14
+>   note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+安装 clang
+
+```bash
+sudo apt-get install clang
+```
+
+指定交叉编译工具链，例如：
+
+```bash
+export CC_mipsel_unknown_linux_musl=mipsel-openwrt-linux-gcc
+export CXX_mipsel_unknown_linux_musl=mipsel-openwrt-linux-g++
+```
+
+#### (6) 找不到 MQTTAsync.h
+
+> [paho-mqtt-sys 0.3.0] debug:clang version: clang version 10.0.0-4ubuntu1
+> [paho-mqtt-sys 0.3.0] debug:bindgen include path: -I/mnt/f/wsl/project/iot_gw/target/mipsel-unknown-linux-musl/release/b
+> uild/paho-mqtt-sys-0e7cd946c58a7093/out/include
+> [paho-mqtt-sys 0.3.0] wrapper.h:1:10: fatal error: 'MQTTAsync.h' file not found
+> [paho-mqtt-sys 0.3.0] wrapper.h:1:10: fatal error: 'MQTTAsync.h' file not found, err: true
+> [paho-mqtt-sys 0.3.0] thread 'main' panicked at 'Unable to generate bindings: ()', /home/dell/.cargo/registry/src/crates
+> .rustcc.com-a21e0f92747beca3/paho-mqtt-sys-0.3.0/build.rs:139:14
+> [paho-mqtt-sys 0.3.0] note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+> error: failed to run custom build command for `paho-mqtt-sys v0.3.0`
+
+为 mipsel-unknown-linux-musl 编译时遇到了该问题，解决办法是修改 paho-mqtt-sys 的版本：
+
+```toml
+[dependencies.paho-mqtt-sys]
+default-features = false
+#version = "0.3"
+version = "0.5"
 ```
 
 ### 6. 网关运行问题解答
