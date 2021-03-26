@@ -2,16 +2,13 @@ extern crate chrono;
 extern crate clap;
 extern crate data_management;
 extern crate data_template;
-#[cfg(feature = "data_interface_serial_port")]
 extern crate hdtp;
 extern crate json;
 extern crate log;
 extern crate log4rs;
 extern crate rusqlite;
-#[cfg(feature = "data_interface_text_file")]
 extern crate sensor_interface;
 extern crate serde_derive;
-#[cfg(feature = "data_interface_serial_port")]
 extern crate serial;
 extern crate time;
 extern crate toml;
@@ -23,10 +20,8 @@ use std::time::Duration;
 
 use clap::{App, Arg};
 use data_template::{Model, Template, Value};
-#[cfg(feature = "data_interface_serial_port")]
 use hdtp::Hdtp;
 use serde_derive::Deserialize;
-#[cfg(feature = "data_interface_serial_port")]
 use serial::prelude::*;
 use std::io::prelude::*;
 use std::sync::mpsc;
@@ -34,10 +29,7 @@ use std::{env, fs, process, str, thread};
 #[cfg(feature = "ssl")]
 use std::path::Path;
 extern crate paho_mqtt as mqtt;
-
-#[cfg(feature = "data_interface_text_file")]
 use sensor_interface::FileIf;
-#[cfg(feature = "data_interface_text_file")]
 use std::fs::File;
 
 use log::{error, warn, info, debug, LevelFilter};
@@ -57,10 +49,14 @@ use log4rs::{
     encode::pattern::PatternEncoder,
 };
 
+struct SensorInterface {
+    text_file: String,
+    serial_port: Option<serial::SystemPort>,
+}
+
 #[derive(Debug)]
 enum DataIfError {
     DataIfOpenError,
-    #[cfg(feature = "data_interface_serial_port")]
     DataIfInitError,
     DataIfUnknownType,
 }
@@ -313,8 +309,7 @@ fn format_msg(original: &str, template_str: &str) -> Result<String, ()> {
     Ok(msg)
 }
 
-#[cfg(feature = "data_interface_serial_port")]
-fn init_data_interface(if_name: &str, if_type: &str) -> Result<serial::SystemPort, DataIfError> {
+fn init_data_interface(if_name: &str, if_type: &str) -> Result<SensorInterface, DataIfError> {
     if if_type.eq("serial_port") {
         const SETTINGS: serial::PortSettings = serial::PortSettings {
             baud_rate: serial::Baud115200,
@@ -338,17 +333,10 @@ fn init_data_interface(if_name: &str, if_type: &str) -> Result<serial::SystemPor
             error!("serial port config failed: {}", err);
             return Err(DataIfError::DataIfInitError);
         };
-        return Ok(port);
-    } else {
-        return Err(DataIfError::DataIfUnknownType);
-    }
-}
-
-#[cfg(feature = "data_interface_text_file")]
-fn init_data_interface(if_name: &str, if_type: &str) -> Result<FileIf, DataIfError> {
-    if if_type.eq("text_file") {
+        return Ok(SensorInterface{ text_file: if_name.to_string(), serial_port: Some(port)});
+    } else if if_type.eq("text_file") {
         match File::open(if_name) {
-            Ok(_file) => return Ok(FileIf),
+            Ok(_file) => return Ok(SensorInterface{ text_file: if_name.to_string(), serial_port: None}),
             Err(_err) => return Err(DataIfError::DataIfOpenError),
         }
     } else {
@@ -439,14 +427,8 @@ fn main() {
         }
     }
 
-    #[cfg(feature = "data_interface_serial_port")]
-    let mut data_if = match init_data_interface(&data_if_name, &data_if_type) {
-        Ok(data_if) => data_if,
-        Err(err) => panic!("Init data interface failed: {:#?}", err),
-    };
-    #[cfg(feature = "data_interface_text_file")]
-    let data_if = match init_data_interface(&data_if_name, &data_if_type) {
-        Ok(data_if) => data_if,
+    let mut sensor_if = match init_data_interface(&data_if_name, &data_if_type) {
+        Ok(sensor_if) => sensor_if,
         Err(err) => panic!("Init data interface failed: {:#?}", err),
     };
 
@@ -467,42 +449,41 @@ fn main() {
     // 获取原始数据
     let original_data_read_thread_builder =
         thread::Builder::new().name("original_data_read_thread".into());
-    #[cfg(feature = "data_interface_serial_port")]
+
     let original_data_read_thread = original_data_read_thread_builder
         .spawn(move || {
             let mut hdtp = Hdtp::new();
             let mut buf: Vec<u8> = vec![0];
             loop {
-                match data_if.read(&mut buf[..]) {
-                    Ok(_n) => {
-                        hdtp.input(buf[0]);
-                        match hdtp.get_msg() {
-                            Ok(msg) => match original_data_tx.send(msg) {
-                                _ => {}
-                            },
-                            Err(_) => {}
+                if data_if_type.eq("serial_port") {
+                    if let Some(ref mut port) = sensor_if.serial_port {
+                        match port.read(&mut buf[..]) {
+                            Ok(_n) => {
+                                hdtp.input(buf[0]);
+                                match hdtp.get_msg() {
+                                    Ok(msg) => match original_data_tx.send(msg) {
+                                        _ => {}
+                                    },
+                                    Err(_) => {}
+                                }
+                            }
+                            Err(_err) => continue,
                         }
+                    };
+                } else {
+                    match FileIf.read(&sensor_if.text_file) {
+                        Ok(sn_msg) => {
+                            if !sn_msg.is_empty() {
+                                match original_data_tx.send(String::from(sn_msg.trim())) {
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Err(_err) => continue,
                     }
-                    Err(_err) => continue,
+                    thread::sleep(Duration::from_secs(1));
                 }
             }
-        })
-        .unwrap();
-
-    #[cfg(feature = "data_interface_text_file")]
-    let original_data_read_thread = original_data_read_thread_builder
-        .spawn(move || loop {
-            match data_if.read(&data_if_name) {
-                Ok(sn_msg) => {
-                    if !sn_msg.is_empty() {
-                        match original_data_tx.send(String::from(sn_msg.trim())) {
-                            _ => {}
-                        }
-                    }
-                }
-                Err(_err) => continue,
-            }
-            thread::sleep(Duration::from_secs(1));
         })
         .unwrap();
 
@@ -832,6 +813,7 @@ fn main() {
                 .mqtt_version(mqtt::MQTT_VERSION_3_1_1)
                 .clean_session(true)
                 .user_name(client.username)
+                //.automatic_reconnect(Duration::from_secs(1), Duration::from_secs(30))
                 .finalize();
 
             info!("Connecting to the MQTT broker...");

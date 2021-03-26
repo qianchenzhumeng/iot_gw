@@ -37,16 +37,7 @@ address = "127.0.0.1:1883"
 
 #### (1) 从文件读取数据（默认）
 
-修改 Cargo.toml 文件，开启 `data_interface_text_file` 特性（默认开启此特性）：
-
-```toml
-[features]
-#default = ["data_interface_serial_port", "build_bindgen", "bundled", "ssl"]
-#default = ["data_interface_text_file", "build_bindgen", "bundled", "ssl"]
-default = ["data_interface_text_file", "build_bindgen", "bundled"]
-```
-
-修改配置文件（默认是 gw.toml），指定串口，并且将数据接口类型设置为 `text_file`（默认为此配置）：
+修改配置文件（默认是 gw.toml），指定文件，并且将数据接口类型设置为 `text_file`（默认为此配置）：
 
 ```toml
 [data_if]
@@ -56,7 +47,7 @@ if_name = "./data_if.txt"
 if_type = "text_file"
 ```
 
-编译运行网关程序：
+运行网关程序：
 
 ```bash
 cargo run -- -c gw.toml
@@ -72,16 +63,6 @@ echo "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\
 
 #### (2) 从串口读取数据
 
-修改 Cargo.toml 文件，开启 `data_interface_serial_port` 特性
-
-```toml
-[features]
-#default = ["data_interface_serial_port", "build_bindgen", "bundled", "ssl"]
-#default = ["data_interface_text_file", "build_bindgen", "bundled", "ssl"]
-#default = ["data_interface_text_file", "build_bindgen", "bundled"]
-default = ["data_interface_serial_port", "build_bindgen", "bundled"]
-```
-
 修改配置文件（默认是 gw.toml），指定串口，并且将数据接口类型设置为 `serial_port`：
 
 ```toml
@@ -92,7 +73,7 @@ if_type = "serial_port"
 #if_type = "text_file"
 ```
 
-编译运行网关程序：
+网关程序：
 
 ```bash
 cargo run -- -c gw.toml
@@ -198,9 +179,8 @@ tls_version tlsv1.2
 
 ```toml
 [features]
-#default = ["data_interface_serial_port", "build_bindgen", "bundled", "ssl"]
-default = ["data_interface_text_file", "build_bindgen", "bundled", "ssl"]
-#default = ["data_interface_text_file", "build_bindgen", "bundled"]
+default = ["build_bindgen", "bundled", "ssl"]
+#default = ["build_bindgen", "bundled"]
 ```
 
 修改配置文件（默认是 gw.toml），使用 ssl 协议，并指定 ca 文件：
