@@ -653,7 +653,7 @@ fn main() {
         let mut id: u32;
         let mut cloud_is_connected = false;
         for datum in datum_receiver.iter() {
-            info!("datum: {{ id: {}, type: {:?}, value: ... }}", datum.id, datum.datum_type);
+            info!("datum: {{ id: {}, type: {:?}, value: {:?} }}", datum.id, datum.datum_type, datum.value.msg);
             match datum.datum_type {
                 DatumType::Notice => {
                     match datum.id {
