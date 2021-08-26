@@ -1,8 +1,9 @@
 [package]
 name = "gw"
-version = "0.1.0"
-authors = ["Dell"]
+version = "0.2.0"
+authors = ["前尘逐梦<qianchenzhumeng@live.cn>"]
 edition = "2018"
+build = "build.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -22,7 +23,8 @@ serde = "1.0"
 data_template = {path = "./data_template"}
 serial = {version = "=0.4.0", path = "./serial-rs/serial"}
 hdtp = {path = "./hdtp"}
-paho-mqtt = "0.7.1"
+paho-mqtt = "0.9.1"
+shadow-rs = "0.7"
 
 [dependencies.rusqlite]
 version = "0.23.1"
@@ -32,9 +34,12 @@ features = ["bundled"]
 default-features = false
 version = "0.5"
 
+[build-dependencies]
+shadow-rs = "0.7"
+
 [features]
 default = ["build_bindgen", "bundled", "ssl"]
 #default = ["build_bindgen", "bundled"]
 build_bindgen = ["paho-mqtt-sys/build_bindgen"]
 bundled = ["paho-mqtt-sys/bundled"]
-ssl = ["paho-mqtt-sys/ssl"]
+ssl = ["paho-mqtt-sys/vendored-ssl"]

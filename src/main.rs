@@ -13,12 +13,13 @@ extern crate serial;
 extern crate time;
 extern crate toml;
 extern crate uuid;
+extern crate shadow_rs;
 
 use chrono::{Local, DateTime};
 use data_management::data_management::{data_base, DeviceData};
 use std::time::Duration;
-
-use clap::{App, Arg};
+use shadow_rs::shadow;
+use clap::{App, Arg, crate_name, crate_version, crate_authors};
 use data_template::{Model, Template, Value};
 use hdtp::Hdtp;
 use serde_derive::Deserialize;
@@ -48,6 +49,8 @@ use log4rs::{
     config::{Appender, Config, Root},
     encode::pattern::PatternEncoder,
 };
+
+shadow!(build);
 
 struct SensorInterface {
     text_file: String,
@@ -364,8 +367,10 @@ fn main() {
         env::var_os("RUST_LOG").unwrap_or_else(|| "info".into()),
     );
 
-    let matches = App::new("pepper_gateway")
-        .author("Yu Yu <qianchenzhumeng@live.cn>")
+    let matches = App::new(crate_name!())
+        .version(crate_version!())
+        .long_version(build::version().as_str())
+        .author(crate_authors!())
         .arg(
             Arg::with_name("CONFIG_FILE")
                 .short("c")
@@ -794,8 +799,8 @@ fn main() {
 
             #[cfg(feature = "ssl")]
             let ssl_opts = mqtt::SslOptionsBuilder::new()
-                .trust_store(&tls.cafile)
-                .key_store(&tls.key_store)
+                .trust_store(&tls.cafile).unwrap()
+                .key_store(&tls.key_store).unwrap()
                 .finalize();
 
             #[cfg(feature = "ssl")]
@@ -819,12 +824,12 @@ fn main() {
             info!("Connecting to the MQTT broker...");
             match cli.connect(conn_opts) {
                 Ok(rsp) => {
-                    if let Some((server_uri, ver, session_present)) = rsp.connect_response() {
+                    if let Some(cr) = rsp.connect_response() {
                         if let Err(err) = cloud_statue_announcement_sender_clone.send(Some(0)) {
                             error!("Error send cloud statue announcement: {}", err);
                         }
-                        info!("Connected to: '{}' with MQTT version {}", server_uri, ver);
-                        if !session_present {
+                        info!("Connected to: '{}' with MQTT version {}", cr.server_uri, cr.mqtt_version);
+                        if !cr.session_present {
                             // Register subscriptions on the server
                             debug!("Subscribing to topics, with requested QoS: {:?}...", qos);
 
