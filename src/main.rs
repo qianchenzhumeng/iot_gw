@@ -492,12 +492,14 @@ fn main() {
         })
         .unwrap();
 
+    // 该通道既收发数据，又收发消息。如果是收发消息，id 为 0 表示网络断开，id 为 1 表示网络已连接。
     let (original_datum_sender, datum_receiver) = mpsc::channel();
     let buffed_datum_sender = original_datum_sender.clone();
     let (datum_publish_sender, datum_publish_receiver) = mpsc::channel();
 
     let (publish_result_sender, publish_result_receiver) = mpsc::channel();
 
+    // 通过该通道向所有需要获知网络连接状态的线程发送网络连通或断开消息（连通：Some(0)，断开：None）
     let (cloud_statue_announcement_sender, cloud_statue_announcement_receiver) = mpsc::channel();
     let cloud_statue_announcement_sender_clone = cloud_statue_announcement_sender.clone();
     let send_cloud_link_broken_msg_to_uploader = datum_publish_sender.clone();
@@ -540,6 +542,7 @@ fn main() {
         .spawn(move || {
             for msg in cloud_link_change_msg_receiver.iter() {
                 if let Some(_msg) = msg {
+                    debug!("Cloud connected, query offline data...");
                     /* 收到联网消息 */
                     let db_req = DbReq {
                         operation: DbOp::QUERY,
@@ -653,6 +656,11 @@ fn main() {
         .unwrap();
 
     // 数据管理
+    // 数据流：
+    //   联网时，原始数据处理线程->数据管理线程->MQTT发布线程（发布），如果发布失败，向数据库操作线程请求保存该数据。
+    //   网络断开时，原始数据处理线程->数据管理线程->数据库操作线程（离线保存）。
+    //   网络恢复时，离线数据处理线程通过数据库操作线程取出缓存的消息，发送给数据管理线程，数据管理线程将数据发给MQTT发布线程，收到发送成功的反馈
+    // 后，向数据库操作线程请求删除对应 id 的消息。
     let data_manager_builder = thread::Builder::new().name("data_manager".into());
     let data_manager = data_manager_builder.spawn(move || {
         let mut id: u32;
@@ -663,7 +671,13 @@ fn main() {
                 DatumType::Notice => {
                     match datum.id {
                         0 => cloud_is_connected = false,    /* 网络断开 */
-                        _ => cloud_is_connected = true,    /* 网络已连接 */
+                        _ => {
+                            cloud_is_connected = true;    /* 网络已连接 */
+                            // 发送联网消息给离线数据处理线程
+                            if let Err(err) = cloud_link_broken_msg_sender.send(Some(0)) {
+                                error!("Error send cloud link broken msg: {}", err);
+                            }
+                        },
                     }
                     continue;
                 },
@@ -723,7 +737,7 @@ fn main() {
                     },
                     Err(err) => error!("Error receiving publish result: {}", err),
                 }
-            } else if id == 0 {    /* 没联网，存入数据库 */
+            } else if id == 0 {    /* 没联网，存入数据库（原始数据处理线程发过来的数据，id 为 0） */
                 let db_req = DbReq{
                     operation: DbOp::INSERT,
                     id: 0,
@@ -735,6 +749,9 @@ fn main() {
                     },
                     _ => {},
                 }
+            } else {
+                // 没有联网且 id 不为 0 的情况下，理论上没有这种情况。
+                error!("Get datum(id: {}) from offine_data_handle_thread when device is offline!", id);
             }
         }
     }).unwrap();
@@ -746,10 +763,8 @@ fn main() {
             for msg in cloud_statue_announcement_receiver.iter() {
                 if let Some(_msg) = msg {
                     info!("Successfully connected.");
-                    // 发送联网消息给离线数据处理线程
-                    if let Err(err) = cloud_link_broken_msg_sender.send(Some(0)) {
-                        error!("Error send cloud link broken msg: {}", err);
-                    }
+                    //   需要接收联网消息的线程由数据管理模块和离线数据处理模块，为了确保离线数据操作线程在数据管理线程获知网络恢复的情况下才向数据管理线程
+                    // 发送数据，此处仅通知数据管理线程，数据管理模块再通知离线数据操作线程。
                     // 发送联网消息给数据管理模块
                     if let Err(err) = send_cloud_link_change_msg_to_data_manager.send(Datum {
                         id: 1,
