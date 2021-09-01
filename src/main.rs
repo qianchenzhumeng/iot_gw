@@ -2,7 +2,6 @@ extern crate chrono;
 extern crate clap;
 extern crate data_management;
 extern crate data_template;
-extern crate hdtp;
 extern crate json;
 extern crate log;
 extern crate log4rs;
@@ -14,6 +13,7 @@ extern crate time;
 extern crate toml;
 extern crate uuid;
 extern crate shadow_rs;
+extern crate min_rs as min;
 
 use chrono::{Local, DateTime};
 use data_management::data_management::{data_base, DeviceData};
@@ -21,7 +21,6 @@ use std::time::Duration;
 use shadow_rs::shadow;
 use clap::{App, Arg, crate_name, crate_version, crate_authors};
 use data_template::{Model, Template, Value};
-use hdtp::Hdtp;
 use serde_derive::Deserialize;
 use serial::prelude::*;
 use std::io::prelude::*;
@@ -31,6 +30,7 @@ use std::{env, fs, process, str, thread};
 use std::path::Path;
 extern crate paho_mqtt as mqtt;
 use sensor_interface::FileIf;
+use sensor_interface::HwIf;
 use std::fs::File;
 
 use log::{error, warn, info, debug, LevelFilter};
@@ -332,7 +332,7 @@ fn init_data_interface(if_name: &str, if_type: &str) -> Result<SensorInterface, 
             error!("serial port config failed: {}", err);
             return Err(DataIfError::DataIfInitError);
         };
-        if let Err(err) = port.set_timeout(Duration::from_secs(5)) {
+        if let Err(err) = port.set_timeout(Duration::from_millis(1000)) {
             error!("serial port config failed: {}", err);
             return Err(DataIfError::DataIfInitError);
         };
@@ -432,7 +432,7 @@ fn main() {
         }
     }
 
-    let mut sensor_if = match init_data_interface(&data_if_name, &data_if_type) {
+    let sensor_if = match init_data_interface(&data_if_name, &data_if_type) {
         Ok(sensor_if) => sensor_if,
         Err(err) => panic!("Init data interface failed: {:#?}", err),
     };
@@ -457,25 +457,33 @@ fn main() {
 
     let original_data_read_thread = original_data_read_thread_builder
         .spawn(move || {
-            let mut hdtp = Hdtp::new();
-            let mut buf: Vec<u8> = vec![0];
-            loop {
-                if data_if_type.eq("serial_port") {
-                    if let Some(ref mut port) = sensor_if.serial_port {
-                        match port.read(&mut buf[..]) {
-                            Ok(_n) => {
-                                hdtp.input(buf[0]);
-                                match hdtp.get_msg() {
-                                    Ok(msg) => match original_data_tx.send(msg) {
-                                        _ => {}
-                                    },
-                                    Err(_) => {}
+            let mut buf: Vec<u8> = (0..255).collect();
+            if data_if_type.eq("serial_port") {
+                if let Some(port) = sensor_if.serial_port {
+                    let uart = HwIf::new(port, String::from("uart"), 128);
+                    let mut min = min::Context::new(
+                        String::from("min"),
+                        &uart,
+                        0,
+                        false,
+                    );
+                    loop {
+                        if let Ok(n) = min.hw_if.read(&mut buf[..]) {
+                            min.poll(&buf[0..n], n as u32);
+                        };
+                        if let Ok(msg) = min.get_msg() {
+                            if let Ok(string) = String::from_utf8(msg.buf[0..msg.len as usize].to_vec()) {
+                                match original_data_tx.send(string) {
+                                    _ => {}
                                 }
                             }
-                            Err(_err) => continue,
                         }
-                    };
-                } else {
+                        thread::sleep(Duration::from_millis(500));
+                    }
+                    
+                };
+            } else {
+                loop {
                     match FileIf.read(&sensor_if.text_file) {
                         Ok(sn_msg) => {
                             if !sn_msg.is_empty() {

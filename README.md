@@ -79,66 +79,10 @@ if_type = "serial_port"
 cargo run -- -c gw.toml
 ```
 
-使用外部设备按 HDTP 的帧格式（见 HDTP [README](/hdtp/README.md)）向串口发送数据（波特率 115200）：
+使用外部设备按 [MIN](https://github.com/min-protocol/min) 协议向串口发送数据（ arduino/min 目录内有 Arduino UNO 示例）：
 
 ```
 {"id":1,"name":"SN-001","temperature": 27.45,"humidity": 25.36,"voltage": 3.88,"status": 0}
-```
-
-Arduino 示例程序：
-
-```c++
-void setup() {
-  Serial.begin(115200);
-}
-
-uint16_t calcByte(uint16_t crc, uint8_t b)
-{
-    uint32_t i;
-    crc = crc ^ (uint32_t)b << 8;
-  
-    for ( i = 0; i < 8; i++)
-    {
-      if ((crc & 0x8000) == 0x8000)
-        crc = crc << 1 ^ 0x1021;
-      else
-        crc = crc << 1;
-    }
-    return crc & 0xffff;
-}
-
-uint16_t CRC16(uint8_t *pBuffer, uint32_t length)
-{
-    uint16_t wCRC16 = 0;
-    uint32_t i;
-    if (( pBuffer == 0 ) || ( length == 0 ))
-    {
-        return 0;
-    }
-    for ( i = 0; i < length; i++)
-    {
-        wCRC16 = calcByte(wCRC16, pBuffer[i]);
-    }
-    return wCRC16;
-}
-
-uint8_t buf[128];
-void loop() {
-	uint8_t n,i;
-	uint16_t crc;
-	n = sprintf(buf, "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\"voltage\": 3.88,\"status\": 0}");
-	crc = CRC16(buf, n);
-
-	Serial.write(0x7E);
-	Serial.write(n);
-	for( i = 0; i < n; i++)
-	{
-		Serial.write(buf[i]);
-	}
-	Serial.write((uint8_t)(crc >> 8));
-	Serial.write((uint8_t)crc);
-	delay(2000);
-}
 ```
 
 #### (3) 使用 TLS
@@ -261,13 +205,22 @@ cargo run -- -c gw.toml
   cargo build --target=mips-unknown-linux-uclibc --release
   ```
 
+- arm-unknown-linux-gnueabihf（树莓派）
+  - 需要将子目录 `termios-rs`、`serial-rs`、`ioctl-rs` 切换到 `pi` 分支
+- mipsel-unknown-linux-musl
+  - 尚未对串口进行适配
+
 默认启用了 rusqlite 的 bundled 特性，libsqlite3-sys 会使用 cc crate 编译 sqlite3，交叉编译时要在环境变量中指定 cc crate使用的编译器(cc crate 的文档中有说明)，否则会调用系统默认的 cc，导致编译过程中出现文件格式无法识别的情况。
 
 为其他平台进行交叉编译时，需要为其单独处理 `termios-rs`、`serial-rs`、`ioctl-rs`、`paho-mqtt-sys`，这些库对应的 github 仓库中有相应的说明。
 
+目录 tools 内有部分平台的编译脚本。
+
 ### 5. 交叉编译问题解答
 
 #### (1) ssl 相关
+
+默认启用了 `paho-mqtt-sys/vendored-ssl` 特性，编译过程中会自动编译自带的 `paho-mqtt-sys` 自带的 openssl 版本，编译成功后，会将其静态链接至最终的可执行文件。这部分是关闭该特性时手动编译 openssl 可能会遇到的问题。`paho-mqtt-sys` 自带的 openssl 版本内没有 mips-unknown-linux-uclibc 的编译配置，需要修改库文件，增加编译配置，或者关闭 `paho-mqtt-sys/vendored-ssl` 特性，手动编译、动态链接。如果是动态链接，需要确保最终的执行环境上有要链接的 openssl 库。
 
 > /mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2/bin/../lib/gcc/mips-openwrt-linux-uclibc/4.8.3/../../../../mips-openwrt-linux-uclibc/bin/ld: cannot find -lssl
 > /mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2/bin/../lib/gcc/mips-openwrt-linux-uclibc/4.8.3/../../../../mips-openwrt-linux-uclibc/bin/ld: cannot find -lcrypto
@@ -413,4 +366,5 @@ Cargo.toml 中有关数据接口的特性和网关配置文件内的不一致。
 
 > Error connecting to the broker: NULL Parameter: NULL Parameter
 
-使用 ssl 连接 broker，但是没有在 `Cargo.toml` 中启用 `ssl` 特性
+使用 ssl 连接 broker，但是没有在 `Cargo.toml` 中启用 `ssl` 特性。
+
