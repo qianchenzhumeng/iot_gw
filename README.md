@@ -77,7 +77,7 @@ if_type = "serial_port"
 cargo run -- -c gw.toml
 ```
 
-使用外部设备按 [MIN](https://github.com/min-protocol/min) 协议向串口发送数据（ arduino/min 目录内有 Arduino UNO 和 Arduino DUE 的示例，烧录 min-t 中的程序）：
+使用外部设备按 [MIN](https://github.com/min-protocol/min) 协议向串口发送数据（ arduino/min 目录内有 Arduino UNO 和 Arduino DUE 的示例，烧录 min 中的程序）：
 
 ```
 {"id":1,"name":"SN-001","temperature": 27.45,"humidity": 25.36,"voltage": 3.88,"status": 0}
@@ -93,7 +93,7 @@ cargo run -- -c gw.toml
 
 网关已支持远程控制功能。该远程控制不是指可以远程控制网关，而是网关会将服务器发过来的控制命令发送给 MCU，MCU 去响应命令，例如点灯等。
 
-arduino 目录下有 Arduino UNO 和 Arduino DUE 的代码示例（min-t 子目录），可以通过服务器控制 Arduino 点亮或熄灭 LED。
+arduino 目录下有 Arduino UNO 和 Arduino DUE 的代码示例（min 子目录），可以通过服务器控制 Arduino 点亮或熄灭 LED。
 
 这里还是以使用 mosquitto 作为 broker 为例：
 
