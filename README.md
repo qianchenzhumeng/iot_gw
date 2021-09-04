@@ -1,20 +1,15 @@
 ### 1. 功能描述
 
+目前仅支持在 linux 上运行。
+
 **已支持以下功能**：
 
-- 数据管理模块(使用 sqlite3)
-- 支持与服务器通过MQTT协议通信，保持长连接
-- 支持解析JSON格式的终端数据
-- 支持从文件读取终端数据
-- 离线时缓存来自终端的数据
-- 在线时发布离线时缓存的数据
-- 使用同一个TCP连接发送数据
-- 从文件读取配置信息，例如数据库路径、服务器地址、id等信息
-- 支持数据模板，根据数据模板重新格式化来自终端的数据、添加自定义属性、预定义属性(例如添加时间戳)等，从而生成新的JSON数据
-- 支持从串口读取终端的数据
-- 支持缓存来自终端的任意类型数据(最长 256 字节)
-- 日志
-- 支持MQTTS(TLS v1.2，v1.3)
+- 数据上传：从文件读取或者从串口接收 JSON 格式的数据，通过 MQTT 发送给服务器
+- 远程控制：可以借助 MQTT 的订阅机制从服务器接收数据，通过串口发送出去
+- 网关离线时可以将数据暂时缓存到数据库内，网络连接恢复后再从数据库里面取出来上传
+- 支持数据模板功能，即可以根据数据模板重新格式化来自终端的数据、添加自定义属性、预定义属性(例如添加时间戳)等，从而生成新的JSON数据
+- 支持日志功能
+- 支持 MQTTS(TLS v1.2，v1.3)
 
 **计划开发的功能**：
 
@@ -22,10 +17,11 @@
 
 ### 2. 使用示例
 
-在本地启动 MQTT broker，监听 1883 端口，例如使用 mosquitto：
+在本地启动 MQTT broker，例如使用 mosquitto：
 
 ```bash
-mosquitto -v -c mosquitto.conf
+# 默认监听 1883 端口
+mosquitto -v
 ```
 
 或者修改配置文件 `gw.toml`，指定可用的 MQTT broker：
@@ -61,6 +57,8 @@ echo "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\
 
 **说明**：网关程序每隔 1 秒读清一次文件，读清后需要手动写入数据。
 
+顺利的话，可以在 mosquitto 的窗口内看到网关发送过去的消息。
+
 #### (2) 从串口读取数据
 
 修改配置文件（默认是 gw.toml），指定串口，并且将数据接口类型设置为 `serial_port`：
@@ -79,13 +77,45 @@ if_type = "serial_port"
 cargo run -- -c gw.toml
 ```
 
-使用外部设备按 [MIN](https://github.com/min-protocol/min) 协议向串口发送数据（ arduino/min 目录内有 Arduino UNO 示例）：
+使用外部设备按 [MIN](https://github.com/min-protocol/min) 协议向串口发送数据（ arduino/min 目录内有 Arduino UNO 和 Arduino DUE 的示例，烧录 min-t 中的程序）：
 
 ```
 {"id":1,"name":"SN-001","temperature": 27.45,"humidity": 25.36,"voltage": 3.88,"status": 0}
 ```
 
-#### (3) 使用 TLS
+如果是 Arduino UNO，只有一个串口，只能用于和网关通信，网关的配置文件中配置接该串口即可。
+
+如果是 Arduino DUE，可以用额外的串口打印调试信息。示例中用到了两个串口，一个是程序烧录串口，用来和网关通信，另一个是 Serial1，打印调试信息，需要额外使用串口转接模块接 TX1、RX1。Serial1 可以改成 SerialUSB（板子上的另一个 microUSB 口）。
+
+顺利的话，网关会收到 Arduino 发送的消息，并且会发送给 mosquitto（可以在 mosquitto 的窗口内看到）。
+
+#### (3) 远程控制
+
+网关已支持远程控制功能。该远程控制不是指可以远程控制网关，而是网关会将服务器发过来的控制命令发送给 MCU，MCU 去响应命令，例如点灯等。
+
+arduino 目录下有 Arduino UNO 和 Arduino DUE 的代码示例（min-t 子目录），可以通过服务器控制 Arduino 点亮或熄灭 LED。
+
+这里还是以使用 mosquitto 作为 broker 为例：
+
+```bash
+# 默认监听 1883 端口
+mosquitto -v
+```
+
+按照 (2) 中的指引操作。
+
+在另一个终端内使用 mosquitto_pub 按照 gw.toml 里面配置的 `sub_topic`（默认为“ctrl/#”） 发送数据：
+
+```bash
+# 点亮 LED
+mosquitto_pub -d -h "localhost" -p 1883 -t "ctrl/1" -m "turn_on"
+# 熄灭 LED
+mosquitto_pub -d -h "localhost" -p 1883 -t "ctrl/1" -m "turn_off"
+```
+
+从发布数据到 LED 点亮或熄灭大概会有 3s 左右延时。
+
+#### (4) 使用 TLS
 
 在本地启动 MQTT broker，例如使用 mosquitto：
 
@@ -146,7 +176,13 @@ key_store = "ca/client.pem"
 cargo run -- -c gw.toml
 ```
 
+#### (5) 连接 ThingsBoard
+
+[待整理]
+
 ### 3. 数据模板引擎功能说明
+
+数据模板引擎需要在配置文件中配置，减 gw.toml 内 `[msg]` 部分。
 
  模板支持的功能：
 

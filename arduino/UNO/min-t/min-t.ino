@@ -57,10 +57,22 @@ uint32_t min_time_ms(void)
 
 void min_application_handler(uint8_t min_id, uint8_t const *min_payload, uint8_t len_payload, uint8_t port)
 {
+  char msg[32] = {0};
+  char *turn_on = "turn_on";
+  char *turn_off = "turn_off";
+
+  memset(msg, 0, sizeof(msg));
+  snprintf(msg, len_payload < sizeof(msg) ? (len_payload+1) : sizeof(msg), "%s", min_payload);
+  Serial.println(msg);
+  if(0 == strncmp(turn_on, msg, sizeof(msg))) {
+    digitalWrite(LED_BUILTIN, HIGH);
+  } else if(0 == strncmp(turn_off, msg, sizeof(msg))) {
+    digitalWrite(LED_BUILTIN, LOW);    
+  }
 }
 
 void setup() {
-  // put your setup code here, to run once:
+  pinMode(LED_BUILTIN, OUTPUT);
   Serial.begin(115200);
   while(!Serial) {
     ; // Wait for serial port
@@ -69,7 +81,7 @@ void setup() {
   // Initialize the single context. Since we are going to ignore the port value we could
   // use any value. But in a bigger program we would probably use it as an index.
   min_init_context(&min_ctx, 0);
-
+  send_reset(&min_ctx);
   last_sent = millis();
 }
 
@@ -101,7 +113,7 @@ void loop() {
     // endianness - i.e. little endian - and so the host code will need to flip the bytes
     // around to decode it. It's a good idea to stick to MIN network ordering (i.e. big
     // endian) for payload words but this would make this example program more complex.
-    uint8_t n = sprintf(min_payload, "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\"voltage\": 3.88,\"status\": 0}");
+    uint8_t n = snprintf((char *)min_payload, sizeof(min_payload), "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\"voltage\": 3.88,\"status\": 0}");
     if(!min_queue_frame(&min_ctx, 0x33U, min_payload, n)) {
       // The queue has overflowed for some reason
     }

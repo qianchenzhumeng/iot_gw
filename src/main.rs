@@ -451,6 +451,10 @@ fn main() {
     let original_data_pub_template = template.clone();
 
     let (original_data_tx, original_data_rx) = mpsc::channel();
+
+    // 下行消息收发
+    let (downstream_msg_tx, downstream_msg_rx): (mpsc::Sender<String>, mpsc::Receiver<String>) = mpsc::channel();
+
     // 获取原始数据
     let original_data_read_thread_builder =
         thread::Builder::new().name("original_data_read_thread".into());
@@ -468,6 +472,13 @@ fn main() {
                         false,
                     );
                     loop {
+                        if let Ok(msg) = downstream_msg_rx.try_recv() {
+                            info!("{}", msg);
+                            if let Err(_) = min.send_frame(0, msg.as_bytes(), msg.len() as u8)
+                            {
+                                error!("Send msg to interface failed.");
+                            }
+                        }
                         if let Ok(n) = min.hw_if.read(&mut buf[..]) {
                             min.poll(&buf[0..n], n as u32);
                         };
@@ -478,12 +489,15 @@ fn main() {
                                 }
                             }
                         }
-                        thread::sleep(Duration::from_millis(500));
+                        thread::sleep(Duration::from_millis(100));
                     }
                     
                 };
             } else {
                 loop {
+                    if let Ok(msg) = downstream_msg_rx.try_recv() {
+                        info!("{}", msg);
+                    }
                     match FileIf.read(&sensor_if.text_file) {
                         Ok(sn_msg) => {
                             if !sn_msg.is_empty() {
@@ -852,15 +866,12 @@ fn main() {
                             error!("Error send cloud statue announcement: {}", err);
                         }
                         info!("Connected to: '{}' with MQTT version {}", cr.server_uri, cr.mqtt_version);
-                        if !cr.session_present {
-                            // Register subscriptions on the server
-                            debug!("Subscribing to topics, with requested QoS: {:?}...", qos);
-
-                            match cli.subscribe(&sub_topic, qos) {
-                                Ok(qosv) => debug!("QoS granted: {:?}", qosv),
-                                Err(e) => {
-                                    debug!("Error subscribing to topics: {:?}", e);
-                                }
+                        // Register subscriptions on the server
+                        debug!("Subscribing to topics, with requested QoS: {:?}...", qos);
+                        match cli.subscribe(&sub_topic, qos) {
+                            Ok(qosv) => debug!("QoS granted: {:?}", qosv),
+                            Err(e) => {
+                                debug!("Error subscribing to topics: {:?}", e);
                             }
                         }
                     }
@@ -871,6 +882,14 @@ fn main() {
                         if cli.reconnect().is_ok() {
                             if let Err(err) = cloud_statue_announcement_sender_clone.send(Some(0)) {
                                 error!("Error send cloud statue announcement: {}", err);
+                            }
+                            // Register subscriptions on the server
+                            debug!("Subscribing to topics, with requested QoS: {:?}...", qos);
+                            match cli.subscribe(&sub_topic, qos) {
+                                Ok(qosv) => debug!("QoS granted: {:?}", qosv),
+                                Err(e) => {
+                                    debug!("Error subscribing to topics: {:?}", e);
+                                }
                             }
                             break;
                         } else {
@@ -887,37 +906,45 @@ fn main() {
             loop {
                 let publish_result: bool;
                 match datum_publish_receiver.recv_timeout(Duration::from_secs(10)) {
-                Ok(option) => if let Some(msg) = option {
-                    let message = mqtt::Message::new(pub_topic.clone(), msg, qos);
-                    debug!("message: {}", message);
-                    if let Err(e) = cli.publish(message) {
-                        error!("Error publishing message: {:?}", e);
-                        publish_result = false;
-                    } else {
-                        publish_result = true;
-                        // 数据发布成功后发送 LOG
-                        match format_log("") {
-                            Ok(log) => {
-                                let log_msg = mqtt::Message::new(pub_log_topic.clone(), log, qos);
-                                match cli.publish(log_msg) {
-                                    Err(err) => error!("Error publishing log: {:?}", err),
-                                    _ => {}
-                                }
-                            },
-                            Err(err) => error!("Error formating log: {:?}", err), 
+                    Ok(option) => if let Some(msg) = option {
+                        let message = mqtt::Message::new(pub_topic.clone(), msg, qos);
+                        debug!("message: {}", message);
+                        if let Err(e) = cli.publish(message) {
+                            error!("Error publishing message: {:?}", e);
+                            publish_result = false;
+                        } else {
+                            publish_result = true;
+                            // 数据发布成功后发送 LOG
+                            match format_log("") {
+                                Ok(log) => {
+                                    let log_msg = mqtt::Message::new(pub_log_topic.clone(), log, qos);
+                                    match cli.publish(log_msg) {
+                                        Err(err) => error!("Error publishing log: {:?}", err),
+                                        _ => {}
+                                    }
+                                },
+                                Err(err) => error!("Error formating log: {:?}", err), 
+                            }
+                        }
+                        match publish_result_sender.send(publish_result) {
+                            Err(err) => error!("Error send publish result: {}", err),
+                            _ => {},
                         }
                     }
-                    match publish_result_sender.send(publish_result) {
-                        Err(err) => error!("Error send publish result: {}", err),
-                        _ => {},
-                    }
+                    Err(_) => {},
                 }
-                Err(_) => {},
-            }
                 if !cli.is_connected() {
                     if cli.reconnect().is_ok() {
                         if let Err(err) = cloud_statue_announcement_sender_clone.send(Some(0)) {
                             error!("Error send cloud statue announcement: {}", err);
+                        }
+                        // Register subscriptions on the server
+                        debug!("Subscribing to topics, with requested QoS: {:?}...", qos);
+                        match cli.subscribe(&sub_topic, qos) {
+                            Ok(qosv) => debug!("QoS granted: {:?}", qosv),
+                            Err(e) => {
+                                debug!("Error subscribing to topics: {:?}", e);
+                            }
                         }
                     }
                 }
@@ -932,7 +959,10 @@ fn main() {
                 Ok(r) => {
                     for msg in r.iter() {
                         if let Some(msg) = msg {
-                            debug!("{}", msg);
+                            if let Err(err) = downstream_msg_tx.send(String::from(msg.payload_str()))
+                            {
+                                error!("Send downstream msg failed(err: {}, msg: {})", err, msg);
+                            }
                         } else {
                             if let Err(err) = cloud_statue_announcement_sender.send(None) {
                                 error!("Error send cloud statue announcement: {}", err);
