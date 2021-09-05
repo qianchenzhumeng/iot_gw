@@ -8,8 +8,6 @@ build = "build.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-data_management = { path = "./data_management" }
-sensor_interface = { path = "./sensor_interface" }
 log = "0.4"
 clap = "2"
 log4rs = "0.10.0"

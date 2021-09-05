@@ -1,12 +1,10 @@
 extern crate chrono;
 extern crate clap;
-extern crate data_management;
 extern crate data_template;
 extern crate json;
 extern crate log;
 extern crate log4rs;
 extern crate rusqlite;
-extern crate sensor_interface;
 extern crate serde_derive;
 extern crate serial;
 extern crate time;
@@ -14,9 +12,15 @@ extern crate toml;
 extern crate uuid;
 extern crate shadow_rs;
 extern crate min_rs as min;
+mod mqtt;
+mod types;
+mod interface;
+mod data_manager;
+
+use types::{ClientConfig, TopicConfig, TlsFiles, MsgReceiver};
 
 use chrono::{Local, DateTime};
-use data_management::data_management::{data_base, DeviceData};
+use data_manager::data_management::{data_base, DeviceData};
 use std::time::Duration;
 use shadow_rs::shadow;
 use clap::{App, Arg, crate_name, crate_version, crate_authors};
@@ -25,12 +29,10 @@ use serde_derive::Deserialize;
 use serial::prelude::*;
 use std::io::prelude::*;
 use std::sync::mpsc;
-use std::{env, fs, process, str, thread};
+use std::{env, fs, str, thread};
 #[cfg(feature = "ssl")]
 use std::path::Path;
-extern crate paho_mqtt as mqtt;
-use sensor_interface::FileIf;
-use sensor_interface::HwIf;
+use interface::{FileIf, HwIf};
 use std::fs::File;
 
 use log::{error, warn, info, debug, LevelFilter};
@@ -114,28 +116,6 @@ struct LogConfig {
 #[derive(Deserialize)]
 struct ServerConfig {
     address: String,
-}
-
-#[cfg(feature = "ssl")]
-#[derive(Deserialize)]
-struct TlsFiles {
-    cafile: String,
-    key_store: String,
-}
-
-#[derive(Deserialize)]
-struct ClientConfig {
-    id: String,
-    keep_alive: u16,
-    username: String,
-}
-
-#[derive(Deserialize)]
-struct TopicConfig {
-    sub_topic: String,
-    pub_topic: String,
-    pub_log_topic: String,
-    qos: i32,
 }
 
 #[derive(Deserialize)]
@@ -388,12 +368,10 @@ fn main() {
     let server_addr = config.server.address;
     #[cfg(feature = "ssl")]
     let tls = config.tls;
+    #[cfg(not(feature = "ssl"))]
+    let tls = TlsFiles{cafile: String::from(""), key_store: String::from("")};  // 如果没有启用 tsl，生成个空的。
     let client = config.client;
-    let keep_alive = client.keep_alive;
-    let pub_topic = config.topic.pub_topic;
-    let pub_log_topic = config.topic.pub_log_topic;
-    let sub_topic = config.topic.sub_topic;
-    let qos = config.topic.qos;
+    let topic = config.topic;
     let database_path = config.database.path;
     let database_name = config.database.name;
     let template = config.msg.template;
@@ -456,8 +434,7 @@ fn main() {
     let (downstream_msg_tx, downstream_msg_rx): (mpsc::Sender<String>, mpsc::Receiver<String>) = mpsc::channel();
 
     // 获取原始数据
-    let original_data_read_thread_builder =
-        thread::Builder::new().name("original_data_read_thread".into());
+    let original_data_read_thread_builder = thread::Builder::new().name("original_data_read_thread".into());
 
     let original_data_read_thread = original_data_read_thread_builder
         .spawn(move || {
@@ -517,9 +494,14 @@ fn main() {
     // 该通道既收发数据，又收发消息。如果是收发消息，id 为 0 表示网络断开，id 为 1 表示网络已连接。
     let (original_datum_sender, datum_receiver) = mpsc::channel();
     let buffed_datum_sender = original_datum_sender.clone();
-    let (datum_publish_sender, datum_publish_receiver) = mpsc::channel();
 
+    // 该通道用于将数据发送给数据上传线程
+    let (datum_publish_sender, datum_publish_receiver): (mpsc::Sender<Option<String>>, mpsc::Receiver<Option<String>>) = mpsc::channel();
+    // 该通道用于向数据发送者返回数据上传结果
     let (publish_result_sender, publish_result_receiver) = mpsc::channel();
+
+    // 该通道用于将封装好的 MQTT 消息发送给数据上传线程
+    let (mqtt_message_sender, mqtt_message_receiver): (mpsc::Sender<paho_mqtt::Message>, mpsc::Receiver<paho_mqtt::Message>) = mpsc::channel();
 
     // 通过该通道向所有需要获知网络连接状态的线程发送网络连通或断开消息（连通：Some(0)，断开：None）
     let (cloud_statue_announcement_sender, cloud_statue_announcement_receiver) = mpsc::channel();
@@ -815,167 +797,18 @@ fn main() {
         .unwrap();
 
     // 处理 MQTT 连接
-    type MsgReceiver = mpsc::Receiver<Option<mqtt::Message>>;
     let (tx, rx): (mpsc::Sender<MsgReceiver>, mpsc::Receiver<MsgReceiver>) = mpsc::channel();
     let mqtt_pub_thread_builder = thread::Builder::new().name("mqtt_pub_thread".into());
     let mqtt_pub_thread = mqtt_pub_thread_builder
-        .spawn(move || {
-            let create_opts = mqtt::CreateOptionsBuilder::new()
-                .server_uri(server_addr)
-                .client_id(client.id)
-                .max_buffered_messages(1) // 离线时不缓存数据
-                .finalize();
-
-            let mut cli = mqtt::Client::new(create_opts).unwrap_or_else(|e| {
-                error!("Error creating the client: {:?}", e);
-                process::exit(1);
-            });
-
-            cli.set_timeout(Duration::from_secs(5));
-            let sub_msg_receiver = cli.start_consuming();
-
-            #[cfg(feature = "ssl")]
-            let ssl_opts = mqtt::SslOptionsBuilder::new()
-                .trust_store(&tls.cafile).unwrap()
-                .key_store(&tls.key_store).unwrap()
-                .finalize();
-
-            #[cfg(feature = "ssl")]
-            let conn_opts = mqtt::ConnectOptionsBuilder::new()
-                .ssl_options(ssl_opts)
-                .keep_alive_interval(Duration::from_secs(keep_alive.into()))
-                .mqtt_version(mqtt::MQTT_VERSION_3_1_1)
-                .clean_session(true)
-                .user_name(client.username)
-                .finalize();
-
-            #[cfg(not(feature = "ssl"))]
-            let conn_opts = mqtt::ConnectOptionsBuilder::new()
-                .keep_alive_interval(Duration::from_secs(keep_alive.into()))
-                .mqtt_version(mqtt::MQTT_VERSION_3_1_1)
-                .clean_session(true)
-                .user_name(client.username)
-                //.automatic_reconnect(Duration::from_secs(1), Duration::from_secs(30))
-                .finalize();
-
-            info!("Connecting to the MQTT broker...");
-            match cli.connect(conn_opts) {
-                Ok(rsp) => {
-                    if let Some(cr) = rsp.connect_response() {
-                        if let Err(err) = cloud_statue_announcement_sender_clone.send(Some(0)) {
-                            error!("Error send cloud statue announcement: {}", err);
-                        }
-                        info!("Connected to: '{}' with MQTT version {}", cr.server_uri, cr.mqtt_version);
-                        // Register subscriptions on the server
-                        debug!("Subscribing to topics, with requested QoS: {:?}...", qos);
-                        match cli.subscribe(&sub_topic, qos) {
-                            Ok(qosv) => debug!("QoS granted: {:?}", qosv),
-                            Err(e) => {
-                                debug!("Error subscribing to topics: {:?}", e);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Error connecting to the broker: {:?}", e);
-                    loop {
-                        if cli.reconnect().is_ok() {
-                            if let Err(err) = cloud_statue_announcement_sender_clone.send(Some(0)) {
-                                error!("Error send cloud statue announcement: {}", err);
-                            }
-                            // Register subscriptions on the server
-                            debug!("Subscribing to topics, with requested QoS: {:?}...", qos);
-                            match cli.subscribe(&sub_topic, qos) {
-                                Ok(qosv) => debug!("QoS granted: {:?}", qosv),
-                                Err(e) => {
-                                    debug!("Error subscribing to topics: {:?}", e);
-                                }
-                            }
-                            break;
-                        } else {
-                            thread::sleep(Duration::from_secs(10));
-                        }
-                    }
-                }
-            }
-
-            match tx.send(sub_msg_receiver) {
-                Err(err) => error!("Send msg receiver failed: {}", err),
-                _ => {}
-            }
-            loop {
-                let publish_result: bool;
-                match datum_publish_receiver.recv_timeout(Duration::from_secs(10)) {
-                    Ok(option) => if let Some(msg) = option {
-                        let message = mqtt::Message::new(pub_topic.clone(), msg, qos);
-                        debug!("message: {}", message);
-                        if let Err(e) = cli.publish(message) {
-                            error!("Error publishing message: {:?}", e);
-                            publish_result = false;
-                        } else {
-                            publish_result = true;
-                            // 数据发布成功后发送 LOG
-                            match format_log("") {
-                                Ok(log) => {
-                                    let log_msg = mqtt::Message::new(pub_log_topic.clone(), log, qos);
-                                    match cli.publish(log_msg) {
-                                        Err(err) => error!("Error publishing log: {:?}", err),
-                                        _ => {}
-                                    }
-                                },
-                                Err(err) => error!("Error formating log: {:?}", err), 
-                            }
-                        }
-                        match publish_result_sender.send(publish_result) {
-                            Err(err) => error!("Error send publish result: {}", err),
-                            _ => {},
-                        }
-                    }
-                    Err(_) => {},
-                }
-                if !cli.is_connected() {
-                    if cli.reconnect().is_ok() {
-                        if let Err(err) = cloud_statue_announcement_sender_clone.send(Some(0)) {
-                            error!("Error send cloud statue announcement: {}", err);
-                        }
-                        // Register subscriptions on the server
-                        debug!("Subscribing to topics, with requested QoS: {:?}...", qos);
-                        match cli.subscribe(&sub_topic, qos) {
-                            Ok(qosv) => debug!("QoS granted: {:?}", qosv),
-                            Err(e) => {
-                                debug!("Error subscribing to topics: {:?}", e);
-                            }
-                        }
-                    }
-                }
-            }
-        })
+        .spawn(
+            mqtt::closure::pub_closure(client, topic, tls, cloud_statue_announcement_sender_clone, tx, datum_publish_receiver, format_log,
+            publish_result_sender, mqtt_message_receiver, server_addr)
+        )
         .unwrap();
 
     let mqtt_sub_thread_builder = thread::Builder::new().name("mqtt_sub_thread".into());
     let mqtt_sub_thread = mqtt_sub_thread_builder
-        .spawn(move || loop {
-            match rx.recv() {
-                Ok(r) => {
-                    for msg in r.iter() {
-                        if let Some(msg) = msg {
-                            if let Err(err) = downstream_msg_tx.send(String::from(msg.payload_str()))
-                            {
-                                error!("Send downstream msg failed(err: {}, msg: {})", err, msg);
-                            }
-                        } else {
-                            if let Err(err) = cloud_statue_announcement_sender.send(None) {
-                                error!("Error send cloud statue announcement: {}", err);
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    error!("mqtt_sub_thread recv error: {}", err);
-                    break;
-                }
-            }
-        })
+        .spawn(mqtt::closure::sub_closure(rx, downstream_msg_tx, cloud_statue_announcement_sender))
         .unwrap();
 
     original_data_read_thread.join().unwrap();
