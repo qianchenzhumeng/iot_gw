@@ -88,15 +88,16 @@ pub mod data_management{
 
 #[cfg(test)]
 mod tests {
+    use crate::data_manager::data_management::data_base;
     #[test]
     fn it_works() {
-        let db = crate::data_management::data_base::open_data_base("./", "test.db");
+        let db = data_base::open_data_base("./", "test.db");
         match db {
             Ok(db) => {
-                match crate::data_management::data_base::create_device_data_table(&db) {
+                match data_base::create_device_data_table(&db) {
                     _ => {},
                 }
-                assert_eq!(crate::data_management::data_base::device_data_table_exsits(&db), true);
+                assert_eq!(data_base::device_data_table_exsits(&db), true);
             },
             Err(err) => {
                 panic!("Problem opening the database: {:?}", err)
