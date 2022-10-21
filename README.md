@@ -226,12 +226,9 @@ cargo run -- -c gw.toml
 
 - x86_64-unknown-linux-gnu
   
-  - 需要将子目录 `termios-rs`、`serial-rs`、`ioctl-rs` 切换到 `master` 分支
-  
 - mips-unknown-linux-uclibc
   - 需要为该目标平台编译 rust：[Cross Compile Rust For OpenWRT](https://qianchenzhumeng.github.io/posts/cross-compile-rust-for-openwrt/)
   - 需要编译 openssl
-  - 需要将子目录 `termios-rs`、`serial-rs`、`ioctl-rs` 切换到 `openwrt_cc` 分支
   - 编译命令: 
   
   ```bash
@@ -240,15 +237,27 @@ cargo run -- -c gw.toml
   export CC_mips_unknown_linux_uclibc=mips-openwrt-linux-uclibc-gcc
   cargo build --target=mips-unknown-linux-uclibc --release
   ```
-
+  
 - arm-unknown-linux-gnueabihf（树莓派）
-  - 需要将子目录 `termios-rs`、`serial-rs`、`ioctl-rs` 切换到 `pi` 分支
+  
 - mipsel-unknown-linux-musl
   - 尚未对串口进行适配
+  
+- riscv64gc-unknown-linux-gnu
+
+  - 尚未对串口进行适配
+  - 编译命令: 
+  
+  ```bash
+  #编译 libsqlite3-sys 需要指定交叉编译工具链
+  export CC_riscv64gc_unknown_linux_gnu=riscv64-unknown-linux-gnu-gcc
+  cargo build --target=riscv64gc-unknown-linux-gnu --release
+  ```
+  
 
 默认启用了 rusqlite 的 bundled 特性，libsqlite3-sys 会使用 cc crate 编译 sqlite3，交叉编译时要在环境变量中指定 cc crate使用的编译器(cc crate 的文档中有说明)，否则会调用系统默认的 cc，导致编译过程中出现文件格式无法识别的情况。
 
-为其他平台进行交叉编译时，需要为其单独处理 `termios-rs`、`serial-rs`、`ioctl-rs`、`paho-mqtt-sys`，这些库对应的 github 仓库中有相应的说明。
+为其他平台进行交叉编译时，需要为其单独处理 `paho-mqtt-sys`，该库对应的 github 仓库中有相应的说明。
 
 目录 tools 内有部分平台的编译脚本。
 

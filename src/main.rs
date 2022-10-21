@@ -6,7 +6,6 @@ extern crate log;
 extern crate log4rs;
 extern crate rusqlite;
 extern crate serde_derive;
-extern crate serial;
 extern crate time;
 extern crate toml;
 extern crate uuid;
@@ -26,7 +25,7 @@ use shadow_rs::shadow;
 use clap::{App, Arg, crate_name, crate_version, crate_authors};
 use data_template::{Model, Template, Value};
 use serde_derive::Deserialize;
-use serial::prelude::*;
+use serialport::SerialPort;
 use std::io::prelude::*;
 use std::sync::mpsc;
 use std::{env, fs, str, thread};
@@ -56,7 +55,7 @@ shadow!(build);
 
 struct SensorInterface {
     text_file: String,
-    serial_port: Option<serial::SystemPort>,
+    serial_port: Option<Box<dyn SerialPort>>,
 }
 
 #[derive(Debug)]
@@ -294,27 +293,15 @@ fn format_msg(original: &str, template_str: &str) -> Result<String, ()> {
 
 fn init_data_interface(if_name: &str, if_type: &str) -> Result<SensorInterface, DataIfError> {
     if if_type.eq("serial_port") {
-        const SETTINGS: serial::PortSettings = serial::PortSettings {
-            baud_rate: serial::Baud115200,
-            char_size: serial::Bits8,
-            parity: serial::ParityNone,
-            stop_bits: serial::Stop1,
-            flow_control: serial::FlowNone,
-        };
-        let mut port = match serial::open(&if_name) {
+        let port = match serialport::new(if_name, 115200)
+            .timeout(Duration::from_millis(10))
+            .open()
+        {
             Ok(port) => port,
             Err(err) => {
                 error!("Open {} failed: {}", if_name, err);
                 return Err(DataIfError::DataIfOpenError);
             }
-        };
-        if let Err(err) = port.configure(&SETTINGS) {
-            error!("serial port config failed: {}", err);
-            return Err(DataIfError::DataIfInitError);
-        };
-        if let Err(err) = port.set_timeout(Duration::from_millis(1000)) {
-            error!("serial port config failed: {}", err);
-            return Err(DataIfError::DataIfInitError);
         };
         return Ok(SensorInterface{ text_file: if_name.to_string(), serial_port: Some(port)});
     } else if if_type.eq("text_file") {

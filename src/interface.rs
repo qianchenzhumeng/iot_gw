@@ -1,13 +1,11 @@
-extern crate serial;
 extern crate min_rs as min;
 extern crate log;
 
-use serial::prelude::*;
-use serial::SystemPort;
 use std::io::prelude::*;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use log::{debug, trace};
+use serialport::SerialPort;
 
 #[derive(Debug,Copy,Clone)]
 pub struct FileIf;
@@ -27,14 +25,14 @@ impl FileIf {
 }
 
 pub struct HwIf {
-    port: RefCell<SystemPort>,
+    port: RefCell<Box<dyn SerialPort>>,
     name: String,
     tx_space_avaliable: u16,
     output: Arc<Mutex<String>>,
 }
 
 impl HwIf {
-    pub fn new(port: SystemPort, name: String, tx_space_avaliable: u16) -> Self {
+    pub fn new(port: Box<dyn SerialPort>, name: String, tx_space_avaliable: u16) -> Self {
         HwIf {
             port: RefCell::new(port),
             name: name,
