@@ -10,3 +10,11 @@ ar = "arm-linux-gnueabihf-ar"
 [target.mipsel-unknown-linux-musl]
 linker = "mipsel-openwrt-linux-musl-gcc"
 ar = "mipsel-openwrt-linux-musl-ar"
+
+[target.mips-unknown-linux-musl]
+linker = "mips-openwrt-linux-musl-gcc"
+ar = "mips-openwrt-linux-musl-ar"
+
+[target.riscv64gc-unknown-linux-gnu]
+linker = "riscv64-unknown-linux-gnu-gcc"
+ar = "riscv64-unknown-linux-gnu-ar"

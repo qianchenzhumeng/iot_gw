@@ -21,7 +21,7 @@ serde = "1.0"
 data_template = {path = "./data_template"}
 paho-mqtt = "0.9.1"
 shadow-rs = "0.7"
-serialport = "4.0.0"
+serialport = {version = "4.0.0", default-features=false}
 min-rs = { git = "https://github.com/qianchenzhumeng/min-rs.git"}
 
 [dependencies.rusqlite]

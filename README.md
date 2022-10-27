@@ -265,6 +265,8 @@ cargo run -- -c gw.toml
 
 #### (1) ssl 相关
 
+##### a. Dragino LG01-P（mips-openwrt-linux-uclibc）
+
 默认启用了 `paho-mqtt-sys/vendored-ssl` 特性，编译过程中会自动编译自带的 `paho-mqtt-sys` 自带的 openssl 版本，编译成功后，会将其静态链接至最终的可执行文件。这部分是关闭该特性时手动编译 openssl 可能会遇到的问题。`paho-mqtt-sys` 自带的 openssl 版本内没有 mips-unknown-linux-uclibc 的编译配置，需要修改库文件，增加编译配置，或者关闭 `paho-mqtt-sys/vendored-ssl` 特性，手动编译、动态链接。如果是动态链接，需要确保最终的执行环境上有要链接的 openssl 库。
 
 > /mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2/bin/../lib/gcc/mips-openwrt-linux-uclibc/4.8.3/../../../../mips-openwrt-linux-uclibc/bin/ld: cannot find -lssl
@@ -295,6 +297,8 @@ cp ~/wsl/source/openssl/include/openssl $STAGING_DIR/include -R
 cp ~/wsl/source/openssl/lib/*.so* $STAGING_DIR/lib
 ```
 
+##### b. MT7688（mipsel-unknown-linux-musl）
+
 如果是 OpenWrt，可以通过 make menuconfig 启用 libopenssl（Libraries -> SSL -> libopenssl），然后将头文件以及共享库复制到交叉编译工具链的相关目录下：
 
 ```bash
@@ -320,6 +324,39 @@ export MIPSEL_UNKNOWN_LINUX_MUSL_OPENSSL_LIB_DIR=$STAGING_DIR/lib
 export MIPSEL_UNKNOWN_LINUX_MUSL_OPENSSL_INCLUDE_DIR=$STAGING_DIR/include
 # 编译
 cargo build --target=mipsel-unknown-linux-musl --release -vv
+```
+
+##### c. 芒果派 MQ-R F133（riscv64gc-unknown-linux-gnu）
+
+太老的 openssl 不支持 riscv64 架构，编译会有问题。所以直接使用 SDK 进行编译。在 `Tina-Linux` 的 `menuconfig` 中使能 `openssl` 编译，并启用兼容过时接口选项，设置兼容至 `1.0.0` 版本（依据是 `openssl-1.1.0i/Configure` 中的 `$apitable`，版本号必须是 `$apitable` 中有的，否则编译不过）。之后在编译网关程序时，导出相关的环境变量即可，具体可以参考编译脚本 `tools/build_f133.sh`：
+
+```
+#!/bin/bash
+
+# 注意，将 HOME 替换为实际的路径
+HOME="/home/dell"
+TARGET="riscv64gc-unknown-linux-gnu"
+MODE="release"
+BIN=target/$TARGET/$MODE/gw
+CC="riscv64-unknown-linux-gnu-gcc"
+AR="riscv64-unknown-linux-gnu-ar"
+CFLAGS="-I$HOME/Tina-Linux/out/f133-mq_r/staging_dir/target/usr/include -I$HOME/Tina-Linux/out/f133-mq_r/compile_dir/target/openssl-1.1.0i/include"
+TOOLCHAIN=~/Tina-Linux/out/f133-mq_r/staging_dir/toolchain
+STRIP=riscv64-unknown-linux-gnu-strip
+
+export PKG_CONFIG_LIBDIR=~/Tina-Linux/out/f133-mq_r/staging_dir/target/usr/lib/pkgconfig
+export PKG_CONFIG_ALLOW_CROSS=1
+export CC_riscv64gc_unknown_linux_gnu=$CC
+export AR_riscv64gc_unknown_linux_gnu=$AR
+export CFLAGS_riscv64gc_unknown_linux_gnu=$CFLAGS
+export PATH=$PATH:$TOOLCHAIN/bin
+export OPENSSL_INCLUDE_DIR=~/Tina-Linux/out/f133-mq_r/compile_dir/target/openssl-1.1.0i/include
+export RISCV64GC_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR=~/Tina-Linux/out/f133-mq_r/compile_dir/target/openssl-1.1.0i
+cd ..
+cargo build --$MODE --target=$TARGET -vv
+$STRIP $BIN
+echo ""
+ls -lh $BIN
 ```
 
 #### (2) 找不到 libanl
@@ -398,6 +435,156 @@ default-features = false
 #version = "0.3"
 version = "0.5"
 ```
+
+#### (7) pkg-config 报错
+
+> [libudev-sys 0.1.4] thread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: "pkg-config has not been configured to support cross-compilation.\n\n                Install a sysroot for the target platform and configure it via\n                PKG_CONFIG_SYSROOT_DIR and PKG_CONFIG_PATH, or install a\n                cross-compiling wrapper for pkg-config and set it via\n                PKG_CONFIG environment variable."', /home/dell/.cargo/registry/src/mirrors.ustc.edu.cn-12df342d903acd47/libudev-sys-0.1.4/build.rs:38:41
+> [libudev-sys 0.1.4] note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+> error: failed to run custom build command for `libudev-sys v0.1.4`
+
+安装 `libudev-dev`：
+
+```
+sudo apt install libudev-dev
+```
+
+设置如下环境变量：
+
+```
+export PKG_CONFIG_LIBDIR=/home/dell/wsl/arm-linux-gnueabihf
+export PKG_CONFIG_ALLOW_CROSS=1
+```
+
+#### (8) 找不到 zlib.h
+
+根据运行环境上的 `libz.so` 的版本，下载对应的 `zlib` 源码，然后在编译时指定头文件路径，例如：
+
+```
+CFLAGS="-I/home/dell/wsl/source/libz-1.2.1100+2/libz
+```
+
+#### (9) 芒果派 MQR-F133（RISC-V64）生成 `paho-mqtt-sys` 绑定的问题
+
+>  - error: unknown target triple 'riscv64gc-unknown-linux-gnu', please use -triple or -arch
+>      thread 'main' panicked at 'libclang error; possible causes include:
+>      - Invalid flag syntax
+>      - Unrecognized flags
+>      - Invalid flag arguments
+>      - File I/O errors
+>        If you encounter an error missing from this list, please file an issue or a PR!', /home/dell/.cargo/registry/src/mirrors.tuna.tsinghua.edu.cn-df7c3c540f42cdbd/bindgen-0.52.0/src/ir/context.rs:574:15
+
+修改 `bindgen-0.52.0` 的源码，在打印上述信息前的位置将传给 `clang` 的标志打印出来：
+
+```
+            println!("{:?}", clang_args);
+            clang::TranslationUnit::parse(
+                &index,
+                "",
+                &clang_args,
+                &options.input_unsaved_files,
+                parse_options,
+            ).expect("libclang error; possible causes include:
+- Invalid flag syntax
+- Unrecognized flags
+- Invalid flag arguments
+- File I/O errors
+If you encounter an error missing from this list, please file an issue or a PR!")
+```
+
+得到如下信息：
+
+>   debug:Using bindgen for Paho C
+>   debug:clang version: clang version 10.0.0-4ubuntu1
+>   debug:bindgen include path: -I/mnt/f/wsl/project/iot_gw/target/riscv64gc-unknown-linux-gnu/release/build/paho-mqtt-sys-b3925b784bd5c394/out/include
+>   ["--target=riscv64gc-unknown-linux-gnu", "-I/mnt/f/wsl/project/iot_gw/target/riscv64gc-unknown-linux-gnu/release/build/paho-mqtt-sys-b3925b784bd5c394/out/include", "-isystem", "/usr/local/include", "-isystem", "/usr/lib/llvm-10/lib/clang/10.0.0/include", "-isystem", "/usr/include/x86_64-linux-gnu", "-isystem", "/usr/include", "wrapper.h"]
+
+可以看到，三元组 `riscv64gc-unknown-linux-gnu` 被传给了 `clang`，同时，从 `paho-mqtt-sys-0.5.0/build.rs` 打印的信息可以看到 `clang` 的版本比较老，可能还不支持 `riscv64gc-unknown-linux-gnu` 三元组。最新的 16.0.0 版本是支持的([](https://llvm.org/doxygen/Triple_8h_source.html))。
+
+试一下 `clang-13`:
+
+```
+sudo apt-get install clang-13
+sudo apt-get install libclang-13-dev
+ls -l /usr/bin/clang*
+lrwxrwxrwx 1 root root 24 Mar 21  2020 /usr/bin/clang -> ../lib/llvm-10/bin/clang
+lrwxrwxrwx 1 root root 26 Mar 21  2020 /usr/bin/clang++ -> ../lib/llvm-10/bin/clang++
+lrwxrwxrwx 1 root root 26 Apr 20  2020 /usr/bin/clang++-10 -> ../lib/llvm-10/bin/clang++
+lrwxrwxrwx 1 root root 26 Jul  6 20:01 /usr/bin/clang++-13 -> ../lib/llvm-13/bin/clang++
+lrwxrwxrwx 1 root root 24 Apr 20  2020 /usr/bin/clang-10 -> ../lib/llvm-10/bin/clang
+lrwxrwxrwx 1 root root 24 Jul  6 20:01 /usr/bin/clang-13 -> ../lib/llvm-13/bin/clang
+lrwxrwxrwx 1 root root 28 Apr 20  2020 /usr/bin/clang-cpp-10 -> ../lib/llvm-10/bin/clang-cpp
+lrwxrwxrwx 1 root root 28 Jul  6 20:01 /usr/bin/clang-cpp-13 -> ../lib/llvm-13/bin/clang-cpp
+```
+
+将 `clang` 软链接指向 `clang-13`：
+
+```
+sudo rm /usr/bin/clang
+sudo ln -s /lib/llvm-13/bin/clang /usr/bin/clang
+```
+
+仍然有问题：
+
+> debug:clang version: Ubuntu clang version 13.0.1-2ubuntu2~20.04.1
+>   debug:bindgen include path: -I/mnt/f/wsl/project/iot_gw/target/riscv64gc-unknown-linux-gnu/release/build/paho-mqtt-sys-b3925b784bd5c394/out/include
+>   ["--target=riscv64gc-unknown-linux-gnu", "-I/mnt/f/wsl/project/iot_gw/target/riscv64gc-unknown-linux-gnu/release/build/paho-mqtt-sys-b3925b784bd5c394/out/include", "-isystem", "/usr/lib/llvm-13/lib/clang/13.0.1/include", "-isystem", "/usr/local/include", "-isystem", "/usr/include/x86_64-linux-gnu", "-isystem", "/usr/include", "wrapper.h"]
+
+从 llvm 源码可以看到，支持 riscv64（https://github.com/llvm/llvm-project/blob/release/13.x/llvm/include/llvm/ADT/Triple.h）：
+
+```
+    riscv32,        // RISC-V (32-bit): riscv32
+    riscv64,        // RISC-V (64-bit): riscv64
+```
+
+但是好像没有 `riscv64gc-unknown-linux-gnu` 的组合。
+
+继续搜索，有人提到，RISC-V 在 `clang` 和 `rustc` 上的三元组不同：https://github.com/rust-lang/rust-bindgen/issues/2136，并且该问题已经得到了解决，但是查看代码时，发现相关提交是 `rust-bindgen` 0.52.0 之后合入的。
+
+修改 `paho-mqtt-sys-0.5.0/Cargo.toml`，将 `bindgen` 的版本修改为 0.60，但还是不行，不知道什么原因，从报错信息中看，调用的仍然是 0.52.0 版。
+
+阅读 `paho-mqtt-sys-0.5.0/build.rs` 源码可知，可以禁用 `build_bindgen` 属性，不要在编译过程中调用 `bindgen` 生成绑定。而是使用 `bindgen` 0.61.0 版手动生成绑定：
+
+```bash
+# 删除老版本的 bindgen
+cargo uninstall bindgen
+
+# 0.61.0 版本，bindgen 的 crate 改名了
+cargo install bindgen-cli
+
+cd ~/.cargo/registry/src/mirrors.tuna.tsinghua.edu.cn-df7c3c540f42cdbd/paho-mqtt-sys-0.5.0
+
+# 但是运行的时候仍然是 bindgen
+RUST_BACKTRACE=full TARGET=riscv64gc-unknown-linux-gnu bindgen wrapper.h -o bindings/bindings_paho_mqtt_c_1.3.8-riscv64gc-unknown-linux-gnu.rs -- -Ipaho.mqtt.c/src --verbose
+```
+
+有如下报错：
+
+> End of search list.
+> thread 'main' panicked at 'assertion failed: `(left == right)`
+>   left: `4`,
+>  right: `8`: Target platform requires `--no-size_t-is-usize`. The size of `ssize_t` (4) does not match the target pointer size (8)', /home/dell/.cargo/registry/src/mirrors.tuna.tsinghua.edu.cn-df7c3c540f42cdbd/bindgen-0.61.0/codegen/mod.rs:851:25
+
+带上 `--no-size_t-is-usize` 选项：
+
+```
+RUST_BACKTRACE=full TARGET=riscv64gc-unknown-linux-gnu bindgen --no-size_t-is-usize wrapper.h -o bindings/bindings_paho_mqtt_c_1.3.8-riscv64gc-unknown-linux-gnu.rs -- -Ipaho.mqtt.c/src --verbose
+```
+
+可以生成绑定 `paho-mqtt-sys-0.5.0/bindings/bindings_paho_mqtt_c_1.3.8-riscv64gc-unknown-linux-gnu.rs`：
+
+然后在 `iot_gw/Cargo.toml` 中，禁用 `paho-mqtt-sys/build_bindgen` 特性：
+
+```
+[features]
+#default = ["build_bindgen", "bundled", "ssl"]
+#default = ["build_bindgen", "bundled"]
+default = ["bundled"]
+build_bindgen = ["paho-mqtt-sys/build_bindgen"]
+bundled = ["paho-mqtt-sys/bundled"]
+ssl = ["paho-mqtt-sys/vendored-ssl"]
+```
+
+进入 `tools` 目录，运行 `build_f133.sh` 即可。
 
 ### 6. 网关运行问题解答
 
