@@ -29,8 +29,8 @@ pub_log_topic = "v1/devices/me/telemetry"
 qos = 0
 
 [msg]
-example = "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\"voltage\": 3.88,\"status\": 0}"
-template = "{<{name}>: [{\"ts\": <#TS#>,\"values\": {\"temperature\": <{temperature}>, \"humidity\": <{humidity}>,\"voltage\": <{voltage}>,\"status\": <{status}>}}]}"
+example = "{\"l\":\"SN-001\",\"t\": 27.45,\"h\": 25.36,\"v\": 3.88,\"e\": 0}"
+template = "{<{l}>: [{\"ts\": <#TS#>,\"values\": {\"temperature\": <{t}>, \"humidity\": <{h}>,\"voltage\": <{v}>,\"status\": <{e}>}}]}"
 
 [database]
 path = "./"

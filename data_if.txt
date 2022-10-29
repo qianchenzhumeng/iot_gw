@@ -1,1 +1,1 @@
-{"id":1,"name":"SN-001","temperature": 27.45,"humidity": 25.36,"voltage": 3.88,"status": 0}
+{"l":"SN-001","t": 27.45,"h": 25.36,"v": 3.88,"e": 0}

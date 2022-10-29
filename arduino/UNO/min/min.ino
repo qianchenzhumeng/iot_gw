@@ -6,6 +6,8 @@
 struct min_context min_ctx;
 uint32_t last_sent = 0;
 
+int HEART_LED=A2;
+
 ////////////////////////////////// CALLBACKS ///////////////////////////////////
 
 void min_tx_start(uint8_t port){
@@ -39,20 +41,21 @@ void min_application_handler(uint8_t min_id, uint8_t const *min_payload, uint8_t
   snprintf(msg, len_payload < sizeof(msg) ? (len_payload+1) : sizeof(msg), "%s", min_payload);
 
   if(0 == strncmp(turn_on, msg, sizeof(msg))) {
-    digitalWrite(LED_BUILTIN, HIGH);
+    digitalWrite(HEART_LED, HIGH);
   } else if(0 == strncmp(turn_off, msg, sizeof(msg))) {
-    digitalWrite(LED_BUILTIN, LOW);    
+    digitalWrite(HEART_LED, LOW);    
   }
 }
 
 void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(HEART_LED, OUTPUT);
   Serial.begin(115200);
   while(!Serial) {
     ; // Wait for serial port
   }
   min_init_context(&min_ctx, 0);
   last_sent = millis();
+  digitalWrite(HEART_LED, HIGH);
 }
 
 uint8_t min_payload[128] = {0};
@@ -68,8 +71,8 @@ void loop() {
   }  
 
   uint32_t now = millis();
-  if (now - last_sent > 5000U) {
-    n = snprintf((char *)min_payload, sizeof(min_payload), "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\"voltage\": 3.88,\"status\": 0}");
+  if (now - last_sent > 1000U) {
+    n = snprintf((char *)min_payload, sizeof(min_payload), "{\"l\":\"SN-004\",\"t\": 27.45,\"h\": 25.36,\"v\": 3.88,\"e\": 0}");
     min_send_frame(&min_ctx, 0x33U, min_payload, n);
     last_sent = now;
   }
