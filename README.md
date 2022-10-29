@@ -69,15 +69,13 @@ if_type = "serial_port"
 cargo run -- -c gw.toml
 ```
 
-使用外部设备按 [MIN](https://github.com/min-protocol/min) 协议向串口发送数据（ arduino/min 目录内有 Arduino UNO 和 Arduino DUE 的示例，烧录 min 中的程序）：
+使用外部设备按 [MIN](https://github.com/min-protocol/min) 协议向串口发送数据（ arduino/min 目录内有 Arduino UNO 的示例，烧录 min 中的程序）：
 
 ```
 {"id":1,"name":"SN-001","temperature": 27.45,"humidity": 25.36,"voltage": 3.88,"status": 0}
 ```
 
 如果是 Arduino UNO，只有一个串口，只能用于和网关通信，网关的配置文件中配置接该串口即可。
-
-如果是 Arduino DUE，可以用额外的串口打印调试信息。示例中用到了两个串口，一个是程序烧录串口，用来和网关通信，另一个是 Serial1，打印调试信息，需要额外使用串口转接模块接 TX1、RX1。Serial1 可以改成 SerialUSB（板子上的另一个 microUSB 口）。
 
 顺利的话，网关会收到 Arduino 发送的消息，并且会发送给 mosquitto（可以在 mosquitto 的窗口内看到）。
 
