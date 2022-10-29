@@ -1,4 +1,5 @@
 #!/bin/bash
+
 TARGET="mipsel-unknown-linux-musl"
 MODE="release"
 BIN=target/$TARGET/$MODE/gw

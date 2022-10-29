@@ -11,10 +11,6 @@
 - 支持日志功能
 - 支持 MQTTS(TLS v1.2，v1.3)
 
-**计划开发的功能**：
-
-- 提供配置信息的WEB界面
-
 ### 2. 使用示例
 
 在本地启动 MQTT broker，例如使用 mosquitto：
@@ -37,8 +33,6 @@ address = "127.0.0.1:1883"
 
 ```toml
 [data_if]
-#if_name = "/dev/ttyS14"
-#if_type = "serial_port"
 if_name = "./data_if.txt"
 if_type = "text_file"
 ```
@@ -67,8 +61,6 @@ echo "{\"id\":1,\"name\":\"SN-001\",\"temperature\": 27.45,\"humidity\": 25.36,\
 [data_if]
 if_name = "/dev/ttyS14"
 if_type = "serial_port"
-#if_name = "./data_if.txt"
-#if_type = "text_file"
 ```
 
 网关程序：
@@ -153,8 +145,9 @@ tls_version tlsv1.2
 
 ```toml
 [features]
-default = ["build_bindgen", "bundled", "ssl"]
-#default = ["build_bindgen", "bundled"]
+default = ["build_bindgen", "ssl"]
+build_bindgen = ["paho-mqtt-sys/build_bindgen"]
+ssl = []
 ```
 
 修改配置文件（默认是 gw.toml），使用 ssl 协议，并指定 ca 文件：
@@ -225,141 +218,19 @@ cargo run -- -c gw.toml
 ### 4. 已支持的平台
 
 - x86_64-unknown-linux-gnu
-  
 - mips-unknown-linux-uclibc
   - 需要为该目标平台编译 rust：[Cross Compile Rust For OpenWRT](https://qianchenzhumeng.github.io/posts/cross-compile-rust-for-openwrt/)
-  - 需要编译 openssl
-  - 编译命令: 
-  
-  ```bash
-  #编译 libsqlite3-sys 需要指定交叉编译工具链
-  export STAGING_DIR=/mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2
-  export CC_mips_unknown_linux_uclibc=mips-openwrt-linux-uclibc-gcc
-  cargo build --target=mips-unknown-linux-uclibc --release
-  ```
   
 - arm-unknown-linux-gnueabihf（树莓派）
-  
 - mipsel-unknown-linux-musl
-  - 尚未对串口进行适配
-  
 - riscv64gc-unknown-linux-gnu
 
-  - 尚未对串口进行适配
-  - 编译命令: 
-  
-  ```bash
-  #编译 libsqlite3-sys 需要指定交叉编译工具链
-  export CC_riscv64gc_unknown_linux_gnu=riscv64-unknown-linux-gnu-gcc
-  cargo build --target=riscv64gc-unknown-linux-gnu --release
-  ```
-  
-
-默认启用了 rusqlite 的 bundled 特性，libsqlite3-sys 会使用 cc crate 编译 sqlite3，交叉编译时要在环境变量中指定 cc crate使用的编译器(cc crate 的文档中有说明)，否则会调用系统默认的 cc，导致编译过程中出现文件格式无法识别的情况。
-
-为其他平台进行交叉编译时，需要为其单独处理 `paho-mqtt-sys`，该库对应的 github 仓库中有相应的说明。
 
 目录 tools 内有部分平台的编译脚本。
 
 ### 5. 交叉编译问题解答
 
-#### (1) ssl 相关
-
-##### a. Dragino LG01-P（mips-openwrt-linux-uclibc）
-
-默认启用了 `paho-mqtt-sys/vendored-ssl` 特性，编译过程中会自动编译自带的 `paho-mqtt-sys` 自带的 openssl 版本，编译成功后，会将其静态链接至最终的可执行文件。这部分是关闭该特性时手动编译 openssl 可能会遇到的问题。`paho-mqtt-sys` 自带的 openssl 版本内没有 mips-unknown-linux-uclibc 的编译配置，需要修改库文件，增加编译配置，或者关闭 `paho-mqtt-sys/vendored-ssl` 特性，手动编译、动态链接。如果是动态链接，需要确保最终的执行环境上有要链接的 openssl 库。
-
-> /mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2/bin/../lib/gcc/mips-openwrt-linux-uclibc/4.8.3/../../../../mips-openwrt-linux-uclibc/bin/ld: cannot find -lssl
-> /mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2/bin/../lib/gcc/mips-openwrt-linux-uclibc/4.8.3/../../../../mips-openwrt-linux-uclibc/bin/ld: cannot find -lcrypto
-
-交叉编译 openssl：
-
-```bash
-# 设置 STAGING_DIR 环境变量（交叉编译工具链路径）
-export STAGING_DIR=/mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2
-# 下载、解压源码
-wget https://www.openssl.org/source/openssl-1.0.2l.tar.gz
-tar zxf openssl-1.0.2l.tar.gz 
-cd openssl-1.0.2l
-```
-
-```bash
-# --prefix 为安装目录
-./Configure linux-mips32 no-asm shared --cross-compile-prefix=mips-openwrt-linux-uclibc- --prefix=~/wsl/source/openssl
-make
-make install
-```
-
-将头文件以及共享库复制到交叉编译工具链的相关目录下：
-
-```bash
-cp ~/wsl/source/openssl/include/openssl $STAGING_DIR/include -R
-cp ~/wsl/source/openssl/lib/*.so* $STAGING_DIR/lib
-```
-
-##### b. MT7688（mipsel-unknown-linux-musl）
-
-如果是 OpenWrt，可以通过 make menuconfig 启用 libopenssl（Libraries -> SSL -> libopenssl），然后将头文件以及共享库复制到交叉编译工具链的相关目录下：
-
-```bash
-cd ~/openwrt-19.07.2/build_dir/target-mipsel_24kc_musl/openssl-1.1.1d
-cp *.so $STAGING_DIR/lib
-cp include/openssl/ $STAGING_DIR/include -R
-```
-
-> Could not find directory of OpenSSL installation, and this `-sys` crate cannot
->   proceed without this knowledge. If OpenSSL is installed and this crate had
->   trouble finding it,  you can set the `OPENSSL_DIR` environment variable for the
->   compilation process.
->
->   Make sure you also have the development packages of openssl installed.
->   For example, `libssl-dev` on Ubuntu or `openssl-devel` on Fedora.
-
-该信息前面会有一段环境变量相关的内容，根据提示设置相关的变量，例如：
-
-```bash
-# 设置环境变量
-export MIPSEL_UNKNOWN_LINUX_MUSL_OPENSSL_DIR=$STAGING_DIR
-export MIPSEL_UNKNOWN_LINUX_MUSL_OPENSSL_LIB_DIR=$STAGING_DIR/lib
-export MIPSEL_UNKNOWN_LINUX_MUSL_OPENSSL_INCLUDE_DIR=$STAGING_DIR/include
-# 编译
-cargo build --target=mipsel-unknown-linux-musl --release -vv
-```
-
-##### c. 芒果派 MQ-R F133（riscv64gc-unknown-linux-gnu）
-
-太老的 openssl 不支持 riscv64 架构，编译会有问题。所以直接使用 SDK 进行编译。在 `Tina-Linux` 的 `menuconfig` 中使能 `openssl` 编译，并启用兼容过时接口选项，设置兼容至 `1.0.0` 版本（依据是 `openssl-1.1.0i/Configure` 中的 `$apitable`，版本号必须是 `$apitable` 中有的，否则编译不过）。之后在编译网关程序时，导出相关的环境变量即可，具体可以参考编译脚本 `tools/build_f133.sh`：
-
-```
-#!/bin/bash
-
-# 注意，将 HOME 替换为实际的路径
-HOME="/home/dell"
-TARGET="riscv64gc-unknown-linux-gnu"
-MODE="release"
-BIN=target/$TARGET/$MODE/gw
-CC="riscv64-unknown-linux-gnu-gcc"
-AR="riscv64-unknown-linux-gnu-ar"
-CFLAGS="-I$HOME/Tina-Linux/out/f133-mq_r/staging_dir/target/usr/include -I$HOME/Tina-Linux/out/f133-mq_r/compile_dir/target/openssl-1.1.0i/include"
-TOOLCHAIN=~/Tina-Linux/out/f133-mq_r/staging_dir/toolchain
-STRIP=riscv64-unknown-linux-gnu-strip
-
-export PKG_CONFIG_LIBDIR=~/Tina-Linux/out/f133-mq_r/staging_dir/target/usr/lib/pkgconfig
-export PKG_CONFIG_ALLOW_CROSS=1
-export CC_riscv64gc_unknown_linux_gnu=$CC
-export AR_riscv64gc_unknown_linux_gnu=$AR
-export CFLAGS_riscv64gc_unknown_linux_gnu=$CFLAGS
-export PATH=$PATH:$TOOLCHAIN/bin
-export OPENSSL_INCLUDE_DIR=~/Tina-Linux/out/f133-mq_r/compile_dir/target/openssl-1.1.0i/include
-export RISCV64GC_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR=~/Tina-Linux/out/f133-mq_r/compile_dir/target/openssl-1.1.0i
-cd ..
-cargo build --$MODE --target=$TARGET -vv
-$STRIP $BIN
-echo ""
-ls -lh $BIN
-```
-
-#### (2) 找不到 libanl
+#### (1) 找不到 libanl
 
 > /mnt/f/wsl/OpenWRT/OpenWrt-SDK-ar71xx-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2/staging_dir/toolchain-mips_34kc_gcc-4.8-linaro_uClibc-0.9.33.2/bin/../lib/gcc/mips-openwrt-linux-uclibc/4.8.3/../../../../mips-openwrt-linux-uclibc/bin/ld: cannot find -lanl
 
@@ -372,7 +243,7 @@ ls -lh $BIN
 		SET(LIBS_SYSTEM c dl pthread rt)
 ```
 
-#### (3) 找不到 libclang
+#### (2) 找不到 libclang
 
 > thread 'main' panicked at 'Unable to find libclang: "couldn\'t find any valid shared libraries matching: [\'libclang.so\', \'libclang-*.so\', \'libclang.so.*\']
 
@@ -380,17 +251,17 @@ ls -lh $BIN
 sudo apt-get install clang libclang-dev
 ```
 
-#### (4) 找不到 bindings
+#### (3) 找不到 bindings
 > thread 'main' panicked at 'No generated bindings exist for the version/target: bindings/bindings_paho_mqtt_c_1.3.2-mips-unknown-linux-uclibc.rs', paho-mqtt-sys/build.rs:102:13
 
 ```bash
 cargo install bindgen
 sudo apt install libc6-dev-i386
-cd ~/.cargo/registry/src/crates.rustcc.com-a21e0f92747beca3/paho-mqtt-sys-0.3.0
+cd ~/.cargo/registry/src/crates.rustcc.com-a21e0f92747beca3/paho-mqtt-sys-0.5.0
 TARGET=mips-unknown-linux-uclibc bindgen wrapper.h -o bindings/bindings_paho_mqtt_c_1.3.2-mips-unknown-linux-uclibc.rs -- -Ipaho.mqtt.c/src --verbose
 ```
 
-#### (5) 找不到 C 库头文件
+#### (4) 找不到 C 库头文件
 
 >   debug:clang version: clang version 10.0.0-4ubuntu1
 >   debug:bindgen include path: -I/mnt/f/wsl/project/iot_gw/target/mipsel-unknown-linux-musl/release/build/paho-mqtt-sys-0e7cd946c58a7093/out/include
@@ -415,47 +286,19 @@ export CC_mipsel_unknown_linux_musl=mipsel-openwrt-linux-gcc
 export CXX_mipsel_unknown_linux_musl=mipsel-openwrt-linux-g++
 ```
 
-#### (6) 找不到 MQTTAsync.h
+#### (5) zlib 相关
 
-> [paho-mqtt-sys 0.3.0] debug:clang version: clang version 10.0.0-4ubuntu1
-> [paho-mqtt-sys 0.3.0] debug:bindgen include path: -I/mnt/f/wsl/project/iot_gw/target/mipsel-unknown-linux-musl/release/b
-> uild/paho-mqtt-sys-0e7cd946c58a7093/out/include
-> [paho-mqtt-sys 0.3.0] wrapper.h:1:10: fatal error: 'MQTTAsync.h' file not found
-> [paho-mqtt-sys 0.3.0] wrapper.h:1:10: fatal error: 'MQTTAsync.h' file not found, err: true
-> [paho-mqtt-sys 0.3.0] thread 'main' panicked at 'Unable to generate bindings: ()', /home/dell/.cargo/registry/src/crates
-> .rustcc.com-a21e0f92747beca3/paho-mqtt-sys-0.3.0/build.rs:139:14
-> [paho-mqtt-sys 0.3.0] note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-> error: failed to run custom build command for `paho-mqtt-sys v0.3.0`
+找不到 `-lz`：
 
-为 mipsel-unknown-linux-musl 编译时遇到了该问题，解决办法是修改 paho-mqtt-sys 的版本：
+将对应平台上的 libz.so 复制到所对应的工具链的库目录下。例如：
 
-```toml
-[dependencies.paho-mqtt-sys]
-default-features = false
-#version = "0.3"
-version = "0.5"
+```bin
+/mnt/f/wsl/tool/raspberrypi-tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian-x64/arm-linux-gnueabihf/lib$ ls -l libz*
+lrwxrwxrwx 1 dell dell    14 Oct 29 18:16 libz.so -> libz.so.1.2.11
+-rwxrwxrwx 1 dell dell 95880 Oct 29 18:15 libz.so.1.2.11
 ```
 
-#### (7) pkg-config 报错
-
-> [libudev-sys 0.1.4] thread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: "pkg-config has not been configured to support cross-compilation.\n\n                Install a sysroot for the target platform and configure it via\n                PKG_CONFIG_SYSROOT_DIR and PKG_CONFIG_PATH, or install a\n                cross-compiling wrapper for pkg-config and set it via\n                PKG_CONFIG environment variable."', /home/dell/.cargo/registry/src/mirrors.ustc.edu.cn-12df342d903acd47/libudev-sys-0.1.4/build.rs:38:41
-> [libudev-sys 0.1.4] note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-> error: failed to run custom build command for `libudev-sys v0.1.4`
-
-安装 `libudev-dev`：
-
-```
-sudo apt install libudev-dev
-```
-
-设置如下环境变量：
-
-```
-export PKG_CONFIG_LIBDIR=/home/dell/wsl/arm-linux-gnueabihf
-export PKG_CONFIG_ALLOW_CROSS=1
-```
-
-#### (8) 找不到 zlib.h
+找不到 `libz.h`：
 
 根据运行环境上的 `libz.so` 的版本，下载对应的 `zlib` 源码，然后在编译时指定头文件路径，例如：
 
@@ -463,7 +306,7 @@ export PKG_CONFIG_ALLOW_CROSS=1
 CFLAGS="-I/home/dell/wsl/source/libz-1.2.1100+2/libz
 ```
 
-#### (9) 芒果派 MQR-F133（RISC-V64）生成 `paho-mqtt-sys` 绑定的问题
+#### (6) 芒果派 MQR-F133（RISC-V64）生成 `paho-mqtt-sys` 绑定的问题
 
 >  - error: unknown target triple 'riscv64gc-unknown-linux-gnu', please use -triple or -arch
 >      thread 'main' panicked at 'libclang error; possible causes include:
@@ -574,14 +417,11 @@ RUST_BACKTRACE=full TARGET=riscv64gc-unknown-linux-gnu bindgen --no-size_t-is-us
 
 然后在 `iot_gw/Cargo.toml` 中，禁用 `paho-mqtt-sys/build_bindgen` 特性：
 
-```
+```toml
 [features]
-#default = ["build_bindgen", "bundled", "ssl"]
-#default = ["build_bindgen", "bundled"]
-default = ["bundled"]
+default = []
 build_bindgen = ["paho-mqtt-sys/build_bindgen"]
-bundled = ["paho-mqtt-sys/bundled"]
-ssl = ["paho-mqtt-sys/vendored-ssl"]
+ssl = []
 ```
 
 进入 `tools` 目录，运行 `build_f133.sh` 即可。
