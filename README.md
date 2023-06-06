@@ -79,7 +79,25 @@ cargo run -- -c gw.toml
 
 顺利的话，网关会收到 Arduino 发送的消息，并且会发送给 mosquitto（可以在 mosquitto 的窗口内看到）。
 
-#### (3) 远程控制
+#### (3) 从 SPI 读取数据
+
+将 SX1276 Lora 模块连接到 SPI 口上，修改配置文件（默认是 gw.toml），指定 spi 设备，并且将数据接口类型设置为 `spi_sx1276`：
+
+```toml
+[data_if]
+if_name = "/dev/spidev0.0"
+if_type = "spi_sx1276"
+```
+
+网关程序：
+
+```bash
+cargo run -- -c gw.toml
+```
+
+需要使用另一个射频参数和 `SpiIf::setup_lora` 中定义的射频参数匹配的 Lora 设备发送数据（4字节头 + 前面提到的 json 字符串）。
+
+#### (4) 远程控制
 
 网关已支持远程控制功能。该远程控制不是指可以远程控制网关，而是网关会将服务器发过来的控制命令发送给 MCU，MCU 去响应命令，例如点灯等。
 
@@ -105,7 +123,7 @@ mosquitto_pub -d -h "localhost" -p 1883 -t "ctrl/1" -m "turn_off"
 
 从发布数据到 LED 点亮或熄灭大概会有 3s 左右延时。
 
-#### (4) 使用 TLS
+#### (5) 使用 TLS
 
 在本地启动 MQTT broker，例如使用 mosquitto：
 
@@ -167,7 +185,7 @@ key_store = "ca/client.pem"
 cargo run -- -c gw.toml
 ```
 
-#### (5) 连接 ThingsBoard
+#### (6) 连接 ThingsBoard
 
 [待整理]
 

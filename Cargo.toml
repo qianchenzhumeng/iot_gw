@@ -23,6 +23,8 @@ paho-mqtt = "0.9.1"
 shadow-rs = "0.7"
 serialport = {version = "4.0.0", default-features=false}
 min-rs = { git = "https://github.com/qianchenzhumeng/min-rs.git"}
+gpio-cdev = "0.5.1"
+spidev = "0.5.1"
 
 [dependencies.rusqlite]
 version = "0.23.1"

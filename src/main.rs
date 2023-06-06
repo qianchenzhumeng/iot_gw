@@ -31,9 +31,9 @@ use std::sync::mpsc;
 use std::{env, fs, str, thread};
 #[cfg(feature = "ssl")]
 use std::path::Path;
-use interface::{FileIf, HwIf};
+use interface::{FileIf, HwIf, SpiIf};
 use std::fs::File;
-
+use spidev::{SpiModeFlags, Spidev, SpidevOptions};
 use log::{error, warn, info, debug, LevelFilter};
 use log4rs::{
     append::{
@@ -56,6 +56,7 @@ shadow!(build);
 struct SensorInterface {
     text_file: String,
     serial_port: Option<Box<dyn SerialPort>>,
+    spi: Option<Spidev>,
 }
 
 #[derive(Debug)]
@@ -303,13 +304,47 @@ fn init_data_interface(if_name: &str, if_type: &str) -> Result<SensorInterface, 
                 return Err(DataIfError::DataIfOpenError);
             }
         };
-        return Ok(SensorInterface{ text_file: if_name.to_string(), serial_port: Some(port)});
+        return Ok(SensorInterface{ text_file: if_name.to_string(), serial_port: Some(port), spi: None});
     } else if if_type.eq("text_file") {
         match File::open(if_name) {
-            Ok(_file) => return Ok(SensorInterface{ text_file: if_name.to_string(), serial_port: None}),
+            Ok(_file) => return Ok(SensorInterface{ text_file: if_name.to_string(), serial_port: None, spi: None}),
             Err(_err) => return Err(DataIfError::DataIfOpenError),
         }
+    } else if if_type.eq("spi_sx1276") {
+        let spi = match Spidev::open(if_name) {
+            Ok(mut spi) => {
+                let options = SpidevOptions::new()
+                    .bits_per_word(8)
+                    .max_speed_hz(1000_000)
+                    .mode(SpiModeFlags::SPI_MODE_0)
+                    .build();
+                match spi.configure(&options) {
+                    Ok(_) => {
+                        if let Ok(_) = SpiIf.init(&mut spi) {
+                            spi
+                        } else {
+                            error!("init spi device failed: {}", if_name);
+                            return Err(DataIfError::DataIfOpenError);
+                        }
+                    }
+                    Err(err) => {
+                        error!("Open {} failed: {}", if_name, err);
+                        return Err(DataIfError::DataIfOpenError);
+                    }
+                }
+            }
+            Err(err) => {
+                error!("Open {} failed: {}", if_name, err);
+                return Err(DataIfError::DataIfOpenError);
+            }
+        };
+        return Ok(SensorInterface {
+            text_file: if_name.to_string(),
+            serial_port: None,
+            spi: Some(spi),
+        });
     } else {
+        error!("DataIf type unknown: {}", if_type);
         return Err(DataIfError::DataIfUnknownType);
     }
 }
@@ -455,8 +490,26 @@ fn main() {
                         }
                         thread::sleep(Duration::from_millis(100));
                     }
-                    
                 };
+            } else if data_if_type.eq("spi_sx1276") {
+                if let Some(mut spi) = sensor_if.spi {
+                    loop {
+                        if let Ok(msg) = downstream_msg_rx.try_recv() {
+                            info!("{}", msg);
+                        }
+                        match SpiIf.read(&mut spi) {
+                            Ok(sn_msg) => {
+                                if !sn_msg.is_empty() {
+                                    match original_data_tx.send(String::from(sn_msg.trim())) {
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            Err(_err) => continue,
+                        }
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                }
             } else {
                 loop {
                     if let Ok(msg) = downstream_msg_rx.try_recv() {

@@ -39,5 +39,7 @@ name = "iot.db"
 [data_if]
 #if_name = "/dev/ttyS14"
 #if_type = "serial_port"
+#if_name = "/dev/spidev0.0"
+#if_type = "spi_sx1276"
 if_name = "./data_if.txt"
 if_type = "text_file"

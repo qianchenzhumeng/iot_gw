@@ -15,6 +15,9 @@ export CC_arm_unknown_linux_gnueabihf=$CC
 export CFLAGS_arm_unknown_linux_gnueabihf=$CFLAGS
 
 cd ..
+if [ -f "$BIN" ];then
+    rm $BIN
+fi
 cargo build --$MODE --target=$TARGET -vv
 $STRIP $BIN
 echo ""
