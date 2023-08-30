@@ -1,10 +1,10 @@
-pub mod data_management{
+pub mod data_management {
     #[derive(Debug)]
     pub struct DeviceData {
         pub msg: String,
     }
 
-    pub mod data_base{
+    pub mod data_base {
         pub fn open_data_base(path: &str, name: &str) -> Result<rusqlite::Connection, ()> {
             let full_path = String::from(path) + name;
             match rusqlite::Connection::open(&full_path) {
@@ -21,11 +21,11 @@ pub mod data_management{
 
         pub fn create_device_data_table(db: &rusqlite::Connection) -> Result<(), ()> {
             let r = db.execute(
-                    "CREATE TABLE DEVICE_DATA(
+                "CREATE TABLE DEVICE_DATA(
                         ID INTEGER PRIMARY KEY,
                         MSG CHAR(256)
                     )",
-                    rusqlite::params![],
+                rusqlite::params![],
             );
             match r {
                 Ok(_ok) => Ok(()),
@@ -34,20 +34,21 @@ pub mod data_management{
         }
 
         pub fn device_data_table_exsits(db: &rusqlite::Connection) -> bool {
-            match db.prepare("SELECT * FROM sqlite_master WHERE name='DEVICE_DATA' and type='table'") {
-                Ok(mut stmt) => {
-                    match stmt.exists(rusqlite::NO_PARAMS) {
-                        Ok(r) => {
-                            r
-                        }
-                        Err(_) => false,
-                    }
+            match db
+                .prepare("SELECT * FROM sqlite_master WHERE name='DEVICE_DATA' and type='table'")
+            {
+                Ok(mut stmt) => match stmt.exists(rusqlite::NO_PARAMS) {
+                    Ok(r) => r,
+                    Err(_) => false,
                 },
                 Err(_err) => false,
             }
         }
 
-        pub fn insert_data_to_device_data_table(db: &rusqlite::Connection, data: &super::DeviceData) -> Result<usize, ()> {
+        pub fn insert_data_to_device_data_table(
+            db: &rusqlite::Connection,
+            data: &super::DeviceData,
+        ) -> Result<usize, ()> {
             let r = db.execute(
                 "INSERT INTO DEVICE_DATA(MSG) VALUES(?1)",
                 rusqlite::params![data.msg],
@@ -95,13 +96,13 @@ mod tests {
         match db {
             Ok(db) => {
                 match data_base::create_device_data_table(&db) {
-                    _ => {},
+                    _ => {}
                 }
                 assert_eq!(data_base::device_data_table_exsits(&db), true);
-            },
+            }
             Err(err) => {
                 panic!("Problem opening the database: {:?}", err)
-            },
+            }
         }
     }
 }

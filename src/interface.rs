@@ -1,13 +1,13 @@
-extern crate min_rs as min;
 extern crate log;
+extern crate min_rs as min;
 
-use std::io::prelude::*;
-use std::io;
-use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
 use log::{debug, trace};
 use serialport::SerialPort;
 use spidev::{Spidev, SpidevTransfer};
+use std::cell::RefCell;
+use std::io;
+use std::io::prelude::*;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 pub const REG_OPMODE: u8 = 0x01;
@@ -78,7 +78,7 @@ enum ModemConfigChoice {
     Bw125Cr48Sf4096, //< Bw = 125 kHz, Cr = 4/8, Sf = 4096chips/symbol, CRC on. Slow+long range
 }
 
-#[derive(Debug,Copy,Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct FileIf;
 
 impl FileIf {
@@ -86,10 +86,10 @@ impl FileIf {
         match std::fs::read_to_string(filename) {
             Ok(msg) => {
                 match std::fs::write(filename, "") {
-                    _ => {},
+                    _ => {}
                 };
                 Ok(msg)
-            },
+            }
             Err(_err) => Err(()),
         }
     }
@@ -121,10 +121,10 @@ impl HwIf {
         output.push_str(format!("0x{:02x} ", byte).as_str());
         let mut port = self.port.borrow_mut();
         match port.write(&[byte]) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) => {
                 debug!(target: self.name.as_str(), "{}", e);
-            },
+            }
         }
     }
 
@@ -143,7 +143,7 @@ impl min::Interface for HwIf {
         output.clear();
         output.push_str(format!("send frame: [ ").as_str());
     }
-    
+
     fn tx_finished(&self) {
         let mut output = self.output.lock().unwrap();
         output.push_str(format!("]").as_str());
@@ -152,12 +152,11 @@ impl min::Interface for HwIf {
     fn tx_space(&self) -> u16 {
         self.available_for_write()
     }
-    
+
     fn tx_byte(&self, _min_port: u8, byte: u8) {
         self.tx(byte);
     }
 }
-
 
 #[derive(Debug, Copy, Clone)]
 pub struct SpiIf;
@@ -308,58 +307,51 @@ impl SpiIf {
         if let Ok(_) = self.set_mode_rx(spi) {
             if let Ok(irq_flags) = self.read_register(spi, REG_IRQ_FLAGS) {
                 if irq_flags & RX_DONE != 0 {
-                    if irq_flags & 0x20 == 0x20 {
-                        debug!("CRC error");
-                        Err(())
-                    } else {
-                        if let Ok(current_addr) = self.read_register(spi, REG_FIFO_RX_CURRENT_ADDR)
-                        {
-                            if let Ok(received_count) = self.read_register(spi, REG_RX_NB_BYTES) {
-                                if let Ok(_) =
-                                    self.write_register(spi, REG_FIFO_ADDR_PTR, current_addr)
-                                {
-                                    for i in 0..received_count as usize {
-                                        buffer[i] = match self.read_register(spi, REG_FIFO) {
-                                            Ok(b) => b,
-                                            Err(e) => {
-                                                debug!("{}", e);
-                                                0
-                                            }
-                                        }
-                                    }
-                                    // Clear all IRQ flags
-                                    match self.write_register(spi, REG_IRQ_FLAGS, 0xff) {
-                                        Ok(_) => {}
+                    if let Ok(current_addr) = self.read_register(spi, REG_FIFO_RX_CURRENT_ADDR) {
+                        if let Ok(received_count) = self.read_register(spi, REG_RX_NB_BYTES) {
+                            if let Ok(_) = self.write_register(spi, REG_FIFO_ADDR_PTR, current_addr)
+                            {
+                                for i in 0..received_count as usize {
+                                    buffer[i] = match self.read_register(spi, REG_FIFO) {
+                                        Ok(b) => b,
                                         Err(e) => {
                                             debug!("{}", e);
+                                            0
                                         }
                                     }
-                                    if let Ok(s) = String::from_utf8(
-                                        buffer[4..received_count as usize].to_vec(),
-                                    ) {
-                                        Ok(s)
-                                    } else {
-                                        debug!("get string error");
-                                        Err(())
+                                }
+                                // Clear all IRQ flags
+                                match self.write_register(spi, REG_IRQ_FLAGS, 0xff) {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        debug!("{}", e);
                                     }
+                                }
+                                if let Ok(s) =
+                                    String::from_utf8(buffer[4..received_count as usize].to_vec())
+                                {
+                                    Ok(s)
                                 } else {
-                                    debug!(
-                                        "write REG_FIFO_ADDR_PTR(0x{:02X}) error",
-                                        REG_FIFO_ADDR_PTR
-                                    );
+                                    debug!("get string error");
                                     Err(())
                                 }
                             } else {
-                                debug!("read REG_RX_NB_BYTES(0x{:02X}) error", REG_RX_NB_BYTES);
+                                debug!(
+                                    "write REG_FIFO_ADDR_PTR(0x{:02X}) error",
+                                    REG_FIFO_ADDR_PTR
+                                );
                                 Err(())
                             }
                         } else {
-                            debug!(
-                                "read REG_FIFO_RX_CURRENT_ADDR(0x{:02X}) error",
-                                REG_FIFO_RX_CURRENT_ADDR
-                            );
+                            debug!("read REG_RX_NB_BYTES(0x{:02X}) error", REG_RX_NB_BYTES);
                             Err(())
                         }
+                    } else {
+                        debug!(
+                            "read REG_FIFO_RX_CURRENT_ADDR(0x{:02X}) error",
+                            REG_FIFO_RX_CURRENT_ADDR
+                        );
+                        Err(())
                     }
                 } else {
                     Err(())

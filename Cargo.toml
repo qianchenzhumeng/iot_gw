@@ -41,6 +41,7 @@ version = "111.10.1+1.1.1g"
 shadow-rs = "0.7"
 
 [features]
-default = ["build_bindgen"]
-build_bindgen = ["paho-mqtt-sys/build_bindgen"]
+#default = ["build_bindgen"]
+#build_bindgen = ["paho-mqtt-sys/build_bindgen"]
+default = ["ssl"]
 ssl = []

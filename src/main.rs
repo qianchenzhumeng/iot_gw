@@ -4,52 +4,50 @@ extern crate data_template;
 extern crate json;
 extern crate log;
 extern crate log4rs;
+extern crate min_rs as min;
 extern crate rusqlite;
 extern crate serde_derive;
+extern crate shadow_rs;
 extern crate time;
 extern crate toml;
 extern crate uuid;
-extern crate shadow_rs;
-extern crate min_rs as min;
+mod data_manager;
+mod interface;
 mod mqtt;
 mod types;
-mod interface;
-mod data_manager;
 
-use types::{ClientConfig, TopicConfig, TlsFiles, MsgReceiver};
+use types::{ClientConfig, MsgReceiver, PublishMessage, TlsFiles, TopicConfig};
 
-use chrono::{Local, DateTime};
+use chrono::{DateTime, Local};
+use clap::{crate_authors, crate_name, crate_version, App, Arg};
 use data_manager::data_management::{data_base, DeviceData};
-use std::time::Duration;
-use shadow_rs::shadow;
-use clap::{App, Arg, crate_name, crate_version, crate_authors};
 use data_template::{Model, Template, Value};
-use serde_derive::Deserialize;
-use serialport::SerialPort;
-use std::io::prelude::*;
-use std::sync::mpsc;
-use std::{env, fs, str, thread};
-#[cfg(feature = "ssl")]
-use std::path::Path;
 use interface::{FileIf, HwIf, SpiIf};
-use std::fs::File;
-use spidev::{SpiModeFlags, Spidev, SpidevOptions};
-use log::{error, warn, info, debug, LevelFilter};
+use log::{debug, error, info, warn, LevelFilter};
 use log4rs::{
     append::{
         console::{ConsoleAppender, Target},
         rolling_file::{
-            RollingFileAppender,
             policy::compound::{
-                CompoundPolicy,
-                roll::fixed_window::FixedWindowRoller,
-                trigger::size::SizeTrigger,
+                roll::fixed_window::FixedWindowRoller, trigger::size::SizeTrigger, CompoundPolicy,
             },
+            RollingFileAppender,
         },
     },
     config::{Appender, Config, Root},
     encode::pattern::PatternEncoder,
 };
+use serde_derive::Deserialize;
+use serialport::SerialPort;
+use shadow_rs::shadow;
+use spidev::{SpiModeFlags, Spidev, SpidevOptions};
+use std::fs::File;
+use std::io::prelude::*;
+#[cfg(feature = "ssl")]
+use std::path::Path;
+use std::sync::mpsc;
+use std::time::Duration;
+use std::{env, fs, str, thread};
 
 shadow!(build);
 
@@ -155,8 +153,8 @@ fn init_app_log(log_config: &LogConfig) -> Result<(), ()> {
 
     // Logging to log file.
     let trigger = SizeTrigger::new(log_config.size);
-    let roller = match FixedWindowRoller::builder()
-        .build(&log_config.file_path_pattern, log_config.count){
+    let roller =
+        match FixedWindowRoller::builder().build(&log_config.file_path_pattern, log_config.count) {
             Ok(roller) => roller,
             Err(_) => return Err(()),
         };
@@ -304,10 +302,20 @@ fn init_data_interface(if_name: &str, if_type: &str) -> Result<SensorInterface, 
                 return Err(DataIfError::DataIfOpenError);
             }
         };
-        return Ok(SensorInterface{ text_file: if_name.to_string(), serial_port: Some(port), spi: None});
+        return Ok(SensorInterface {
+            text_file: if_name.to_string(),
+            serial_port: Some(port),
+            spi: None,
+        });
     } else if if_type.eq("text_file") {
         match File::open(if_name) {
-            Ok(_file) => return Ok(SensorInterface{ text_file: if_name.to_string(), serial_port: None, spi: None}),
+            Ok(_file) => {
+                return Ok(SensorInterface {
+                    text_file: if_name.to_string(),
+                    serial_port: None,
+                    spi: None,
+                })
+            }
             Err(_err) => return Err(DataIfError::DataIfOpenError),
         }
     } else if if_type.eq("spi_sx1276") {
@@ -391,9 +399,13 @@ fn main() {
     #[cfg(feature = "ssl")]
     let tls = config.tls;
     #[cfg(not(feature = "ssl"))]
-    let tls = TlsFiles{cafile: String::from(""), key_store: String::from("")};  // 如果没有启用 tsl，生成个空的。
+    let tls = TlsFiles {
+        cafile: String::from(""),
+        key_store: String::from(""),
+    }; // 如果没有启用 tsl，生成个空的。
     let client = config.client;
     let topic = config.topic;
+    let rpc_respose_topic = topic.rpc_response_topic.clone();
     let database_path = config.database.path;
     let database_name = config.database.name;
     let template = config.msg.template;
@@ -421,14 +433,10 @@ fn main() {
     // 检查证书和密钥库是否存在
     #[cfg(feature = "ssl")]
     if !Path::new(&tls.cafile).exists() {
-        panic!(
-            "The trust store file does not exist: {}", &tls.cafile
-        );
+        panic!("The trust store file does not exist: {}", &tls.cafile);
     } else {
         if !Path::new(&tls.key_store).exists() {
-            panic!(
-                "The key store file does not exist: {}", &tls.key_store
-            );
+            panic!("The key store file does not exist: {}", &tls.key_store);
         }
     }
 
@@ -453,10 +461,39 @@ fn main() {
     let (original_data_tx, original_data_rx) = mpsc::channel();
 
     // 下行消息收发
-    let (downstream_msg_tx, downstream_msg_rx): (mpsc::Sender<String>, mpsc::Receiver<String>) = mpsc::channel();
+    let (downstream_msg_tx, downstream_msg_rx): (mpsc::Sender<String>, mpsc::Receiver<String>) =
+        mpsc::channel();
 
     // 获取原始数据
-    let original_data_read_thread_builder = thread::Builder::new().name("original_data_read_thread".into());
+    let original_data_read_thread_builder =
+        thread::Builder::new().name("original_data_read_thread".into());
+
+    // 该通道既收发数据，又收发消息。如果是收发消息，id 为 0 表示网络断开，id 为 1 表示网络已连接。
+    let (original_datum_sender, datum_receiver) = mpsc::channel();
+    let buffed_datum_sender = original_datum_sender.clone();
+
+    // 该通道用于将数据发送给数据上传线程
+    let (datum_publish_sender, datum_publish_receiver): (
+        mpsc::Sender<Option<PublishMessage>>,
+        mpsc::Receiver<Option<PublishMessage>>,
+    ) = mpsc::channel();
+    // 该通道用于向数据发送者返回数据上传结果
+    let (publish_result_sender, publish_result_receiver) = mpsc::channel();
+
+    // 该通道用于将封装好的 MQTT 消息发送给数据上传线程
+    let (mqtt_message_sender, mqtt_message_receiver): (
+        mpsc::Sender<paho_mqtt::Message>,
+        mpsc::Receiver<paho_mqtt::Message>,
+    ) = mpsc::channel();
+
+    // 通过该通道向所有需要获知网络连接状态的线程发送网络连通或断开消息（连通：Some(0)，断开：None）
+    let (cloud_statue_announcement_sender, cloud_statue_announcement_receiver) = mpsc::channel();
+    let cloud_statue_announcement_sender_clone = cloud_statue_announcement_sender.clone();
+    let send_cloud_link_broken_msg_to_uploader: mpsc::Sender<Option<PublishMessage>> =
+        datum_publish_sender.clone();
+    let rpc_response_sender: mpsc::Sender<Option<PublishMessage>> = datum_publish_sender.clone();
+    let (cloud_link_broken_msg_sender, cloud_link_change_msg_receiver) = mpsc::channel();
+    let send_cloud_link_change_msg_to_data_manager = original_datum_sender.clone();
 
     let original_data_read_thread = original_data_read_thread_builder
         .spawn(move || {
@@ -464,17 +501,11 @@ fn main() {
             if data_if_type.eq("serial_port") {
                 if let Some(port) = sensor_if.serial_port {
                     let uart = HwIf::new(port, String::from("uart"), 128);
-                    let mut min = min::Context::new(
-                        String::from("min"),
-                        &uart,
-                        0,
-                        false,
-                    );
+                    let mut min = min::Context::new(String::from("min"), &uart, 0, false);
                     loop {
                         if let Ok(msg) = downstream_msg_rx.try_recv() {
                             info!("{}", msg);
-                            if let Err(_) = min.send_frame(0, msg.as_bytes(), msg.len() as u8)
-                            {
+                            if let Err(_) = min.send_frame(0, msg.as_bytes(), msg.len() as u8) {
                                 error!("Send msg to interface failed.");
                             }
                         }
@@ -482,7 +513,9 @@ fn main() {
                             min.poll(&buf[0..n], n as u32);
                         };
                         if let Ok(msg) = min.get_msg() {
-                            if let Ok(string) = String::from_utf8(msg.buf[0..msg.len as usize].to_vec()) {
+                            if let Ok(string) =
+                                String::from_utf8(msg.buf[0..msg.len as usize].to_vec())
+                            {
                                 match original_data_tx.send(string) {
                                     _ => {}
                                 }
@@ -530,25 +563,6 @@ fn main() {
             }
         })
         .unwrap();
-
-    // 该通道既收发数据，又收发消息。如果是收发消息，id 为 0 表示网络断开，id 为 1 表示网络已连接。
-    let (original_datum_sender, datum_receiver) = mpsc::channel();
-    let buffed_datum_sender = original_datum_sender.clone();
-
-    // 该通道用于将数据发送给数据上传线程
-    let (datum_publish_sender, datum_publish_receiver): (mpsc::Sender<Option<String>>, mpsc::Receiver<Option<String>>) = mpsc::channel();
-    // 该通道用于向数据发送者返回数据上传结果
-    let (publish_result_sender, publish_result_receiver) = mpsc::channel();
-
-    // 该通道用于将封装好的 MQTT 消息发送给数据上传线程
-    let (mqtt_message_sender, mqtt_message_receiver): (mpsc::Sender<paho_mqtt::Message>, mpsc::Receiver<paho_mqtt::Message>) = mpsc::channel();
-
-    // 通过该通道向所有需要获知网络连接状态的线程发送网络连通或断开消息（连通：Some(0)，断开：None）
-    let (cloud_statue_announcement_sender, cloud_statue_announcement_receiver) = mpsc::channel();
-    let cloud_statue_announcement_sender_clone = cloud_statue_announcement_sender.clone();
-    let send_cloud_link_broken_msg_to_uploader = datum_publish_sender.clone();
-    let (cloud_link_broken_msg_sender, cloud_link_change_msg_receiver) = mpsc::channel();
-    let send_cloud_link_change_msg_to_data_manager = original_datum_sender.clone();
 
     // 原始数据处理
     let original_data_handle_thread_builder =
@@ -729,7 +743,7 @@ fn main() {
             }
             id = datum.id;
             if cloud_is_connected { /* 已联网，发布数据 */
-                match datum_publish_sender.send(Some(datum.value.msg.clone())) {
+                match datum_publish_sender.send(Some(PublishMessage{ topic: None, value: datum.value.msg.clone()})) {
                     Ok(_) => {},
                     Err(err) => error!("Error send datum to publish: {}", err),
                 }
@@ -840,15 +854,29 @@ fn main() {
     let (tx, rx): (mpsc::Sender<MsgReceiver>, mpsc::Receiver<MsgReceiver>) = mpsc::channel();
     let mqtt_pub_thread_builder = thread::Builder::new().name("mqtt_pub_thread".into());
     let mqtt_pub_thread = mqtt_pub_thread_builder
-        .spawn(
-            mqtt::closure::pub_closure(client, topic, tls, cloud_statue_announcement_sender_clone, tx, datum_publish_receiver, format_log,
-            publish_result_sender, mqtt_message_receiver, server_addr)
-        )
+        .spawn(mqtt::closure::pub_closure(
+            client,
+            topic,
+            tls,
+            cloud_statue_announcement_sender_clone,
+            tx,
+            datum_publish_receiver,
+            format_log,
+            publish_result_sender,
+            mqtt_message_receiver,
+            server_addr,
+        ))
         .unwrap();
 
     let mqtt_sub_thread_builder = thread::Builder::new().name("mqtt_sub_thread".into());
     let mqtt_sub_thread = mqtt_sub_thread_builder
-        .spawn(mqtt::closure::sub_closure(rx, downstream_msg_tx, cloud_statue_announcement_sender))
+        .spawn(mqtt::closure::sub_closure(
+            rx,
+            downstream_msg_tx,
+            cloud_statue_announcement_sender,
+            rpc_response_sender,
+            rpc_respose_topic,
+        ))
         .unwrap();
 
     original_data_read_thread.join().unwrap();

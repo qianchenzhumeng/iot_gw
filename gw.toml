@@ -23,7 +23,8 @@ keep_alive = 60
 username = "pepper_gw"
 
 [topic]
-sub_topic = "ctrl/#"
+rpc_request_topic = "v1/devices/me/rpc/request/+"
+rpc_response_topic = "v1/devices/me/rpc/response/"
 pub_topic = "v1/gateway/telemetry"
 pub_log_topic = "v1/devices/me/telemetry"
 qos = 0

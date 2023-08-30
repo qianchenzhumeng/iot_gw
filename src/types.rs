@@ -13,7 +13,8 @@ pub struct ClientConfig {
 
 #[derive(Deserialize)]
 pub struct TopicConfig {
-    pub sub_topic: String,
+    pub rpc_request_topic: String,
+    pub rpc_response_topic: String,
     pub pub_topic: String,
     pub pub_log_topic: String,
     pub qos: i32,
@@ -23,4 +24,9 @@ pub struct TopicConfig {
 pub struct TlsFiles {
     pub cafile: String,
     pub key_store: String,
+}
+
+pub struct PublishMessage {
+    pub topic: Option<String>,
+    pub value: String,
 }

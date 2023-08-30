@@ -112,13 +112,13 @@ mosquitto -v
 
 按照 (2) 中的指引操作。
 
-在另一个终端内使用 mosquitto_pub 按照 gw.toml 里面配置的 `sub_topic`（默认为“ctrl/#”） 发送数据：
+在另一个终端内使用 mosquitto_pub 按照 gw.toml 里面配置的 `rpc_request_topic`（默认为“v1/devices/me/rpc/request/+”） 发送数据：
 
 ```bash
 # 点亮 LED
-mosquitto_pub -d -h "localhost" -p 1883 -t "ctrl/1" -m "turn_on"
+mosquitto_pub -d -h "localhost" -p 1883 -t "v1/devices/me/rpc/request/1" -m "turn_on"
 # 熄灭 LED
-mosquitto_pub -d -h "localhost" -p 1883 -t "ctrl/1" -m "turn_off"
+mosquitto_pub -d -h "localhost" -p 1883 -t "v1/devices/me/rpc/request/1" -m "turn_off"
 ```
 
 从发布数据到 LED 点亮或熄灭大概会有 3s 左右延时。
